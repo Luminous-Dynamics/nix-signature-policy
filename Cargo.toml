@@ -1,0 +1,26 @@
+[package]
+name = "nix-pqc-cache-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Prototype: hybrid Ed25519+ML-DSA-65 signing/verification for Nix binary caches, plus a local trust-translating reverse proxy"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[[bin]]
+name = "nix-pqc-cache-proxy"
+path = "src/main.rs"
+
+[dependencies]
+mycelix-crypto = { path = "../mycelix-workspace/mycelix-identity/crates/mycelix-crypto", features = ["hybrid-rc"] }
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+base64 = "0.22"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+ed25519-dalek = "2"
+
+[dev-dependencies]
+tempfile = "3"
