@@ -89,7 +89,11 @@ pub async fn serve(
     secret: SecretKey,
 ) -> Result<()> {
     let upstream_pubkey = keys::strip_key_name(&upstream_pubkey).to_string();
-    let client = reqwest::Client::builder().build()?;
+    // Without a timeout, a hung or slow upstream would leave a request (and
+    // the client waiting on it) stuck indefinitely.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
 
     let state = Arc::new(ProxyState {
         upstream,

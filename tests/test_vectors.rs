@@ -45,6 +45,7 @@ fn fingerprint_vectors_match() {
     for name in [
         "fingerprint-001-with-references",
         "fingerprint-002-no-references",
+        "fingerprint-003-shuffled-references",
     ] {
         let vector = load(name);
         let info = narinfo_from_fields(&vector["narinfo_fields"]);
@@ -55,6 +56,38 @@ fn fingerprint_vectors_match() {
             "vector {name} fingerprint mismatch"
         );
     }
+}
+
+#[test]
+fn shuffled_references_vector_matches_canonical_vector() {
+    // Belt-and-suspenders on top of fingerprint_vectors_match: the
+    // shuffled-order vector's expected fingerprint must be IDENTICAL to
+    // the canonically-ordered vector's, not just internally self-consistent.
+    let canonical = load("fingerprint-001-with-references");
+    let shuffled = load("fingerprint-003-shuffled-references");
+    assert_ne!(
+        canonical["narinfo_fields"]["references"], shuffled["narinfo_fields"]["references"],
+        "the vectors should actually differ in input order"
+    );
+    assert_eq!(
+        canonical["expected_fingerprint"], shuffled["expected_fingerprint"],
+        "shuffled reference order must not change the fingerprint"
+    );
+}
+
+fn strip_prefix_all(lines: &Value, prefix: &str) -> Vec<String> {
+    lines
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .unwrap()
+                .strip_prefix(prefix)
+                .unwrap()
+                .to_string()
+        })
+        .collect()
 }
 
 fn run_signature_vector(name: &str) {
@@ -76,16 +109,11 @@ fn run_signature_vector(name: &str) {
     let ml_dsa = B64
         .decode(vector["ml_dsa_65_public_key_b64"].as_str().unwrap())
         .unwrap();
-    let keys = mycelix_crypto::hybrid_sig::HybridVerifyingKeys { ed25519, ml_dsa };
+    let keys = nix_pqc_cache_proxy::hybrid::HybridVerifyingKeys { ed25519, ml_dsa };
 
     let mut info = info;
-    if let Some(sig_line) = vector["sig_line"].as_str() {
-        info.sigs
-            .push(sig_line.strip_prefix("Sig: ").unwrap().to_string());
-    }
-    let sig_pqc_line = vector["sig_pqc_line"].as_str().unwrap();
-    info.sig_pqc
-        .push(sig_pqc_line.strip_prefix("Sig-PQC: ").unwrap().to_string());
+    info.sigs = strip_prefix_all(&vector["sig_lines"], "Sig: ");
+    info.sig_pqc = strip_prefix_all(&vector["sig_pqc_lines"], "Sig-PQC: ");
 
     let expected_hybrid_valid = vector["expected"]["hybrid_valid"].as_bool().unwrap();
     let actual = verify_hybrid(&info, fingerprint, keyname, &keys).is_ok();
@@ -116,15 +144,58 @@ fn sig_pqc_missing_classical_pairing_vector() {
 }
 
 #[test]
+fn sig_pqc_duplicate_invalid_first_valid_second_vector() {
+    run_signature_vector("sig-pqc-005-duplicate-invalid-first-valid-second");
+}
+
+#[test]
+fn sig_pqc_malformed_base64_vector() {
+    run_signature_vector("sig-pqc-006-malformed-base64");
+}
+
+#[test]
+fn sig_pqc_wrong_size_ml_dsa_signature_vector() {
+    run_signature_vector("sig-pqc-007-wrong-size-ml-dsa-signature");
+}
+
+#[test]
+fn sig_pqc_unknown_tag_then_valid_vector() {
+    run_signature_vector("sig-pqc-008-unknown-tag-then-valid");
+}
+
+#[test]
 fn decode_sig_pqc_rejects_unknown_tag_vector() {
     // Belt-and-suspenders: confirm the decode step itself (not just
     // verify_hybrid) rejects the unknown-tag vector, matching the RFC's
     // claim that an unrecognized algorithm tag is "rejected cleanly."
     let vector = load("sig-pqc-003-unknown-algorithm-tag");
-    let sig_pqc_line = vector["sig_pqc_line"]
+    let sig_pqc_line = vector["sig_pqc_lines"][0]
         .as_str()
         .unwrap()
         .strip_prefix("Sig-PQC: ")
         .unwrap();
     assert!(keys::decode_sig_pqc(sig_pqc_line).is_err());
+}
+
+#[test]
+fn decode_sig_pqc_rejects_malformed_base64_vector() {
+    let vector = load("sig-pqc-006-malformed-base64");
+    let sig_pqc_line = vector["sig_pqc_lines"][0]
+        .as_str()
+        .unwrap()
+        .strip_prefix("Sig-PQC: ")
+        .unwrap();
+    assert!(keys::decode_sig_pqc(sig_pqc_line).is_err());
+}
+
+#[test]
+fn decode_sig_pqc_rejects_wrong_size_vector() {
+    let vector = load("sig-pqc-007-wrong-size-ml-dsa-signature");
+    let sig_pqc_line = vector["sig_pqc_lines"][0]
+        .as_str()
+        .unwrap()
+        .strip_prefix("Sig-PQC: ")
+        .unwrap();
+    let err = keys::decode_sig_pqc(sig_pqc_line).unwrap_err();
+    assert!(err.to_string().contains("expected exactly"));
 }

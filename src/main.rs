@@ -176,7 +176,14 @@ fn cmd_verify(
     if let Some(pqc_pubkey_path) = pqc_pubkey_path {
         let pk = PublicKey::load(pqc_pubkey_path)?;
         for entry in &info.sig_pqc {
-            let (name, _algorithm, _ml_dsa) = keys::decode_sig_pqc(entry)?;
+            // A malformed or unrecognized-algorithm entry is a failed
+            // candidate, not a reason to abort checking the rest of the
+            // list -- one bad Sig-PQC line must never block a different,
+            // valid one elsewhere in the same narinfo.
+            let name = match keys::decode_sig_pqc(entry) {
+                Ok((name, _algorithm, _ml_dsa)) => name,
+                Err(_) => continue,
+            };
             if keys::verify_hybrid(&info, &fingerprint, &name, &pk.keys).is_ok() {
                 pqc_ok = true;
                 break;

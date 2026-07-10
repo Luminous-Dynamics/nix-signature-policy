@@ -134,7 +134,7 @@ async fn spawn_our_proxy(
 
     let secret_for_caller = SecretKey {
         name: "test-proxy-1".to_string(),
-        signer: mycelix_crypto::hybrid_sig::HybridSigner::from_bytes(&secret_bytes).unwrap(),
+        signer: nix_pqc_cache_proxy::hybrid::HybridSigner::from_bytes(&secret_bytes).unwrap(),
     };
     (proxy_addr, secret_for_caller)
 }

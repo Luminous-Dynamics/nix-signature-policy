@@ -131,9 +131,18 @@ impl NarInfo {
     /// `1;<store_path>;<nar_hash>;<nar_size>;<comma-joined full reference paths>`.
     pub fn fingerprint(&self) -> Result<String> {
         let store_dir = self.store_dir()?;
-        let refs = self
-            .references
-            .iter()
+        // Real Nix stores references in a `StorePathSet` (`std::set<StorePath>`,
+        // ordered by `StorePath`'s default lexicographic comparison on the
+        // basename) and documents ValidPathInfo::fingerprint() as using "the
+        // sorted references" (verified against src/libstore/include/nix/store/
+        // path-info.hh) — it never trusts the narinfo text's original order.
+        // A narinfo's References: line happens to already be sorted whenever
+        // real Nix produced it, but nothing guarantees that for arbitrary
+        // input, so we must sort here too rather than preserve parse order.
+        let mut sorted_refs: Vec<&String> = self.references.iter().collect();
+        sorted_refs.sort();
+        let refs = sorted_refs
+            .into_iter()
             .map(|r| format!("{store_dir}/{r}"))
             .collect::<Vec<_>>()
             .join(",");
@@ -237,6 +246,30 @@ Sig: cache.nixos.org-1:DCeO+o0Q4DlnCPr8TeBZE77GhRlm11H9x609XtU7rUS69am2qkhX4zTsK
              sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48;1654112;\
              /nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37,\
              /nix/store/q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66"
+        );
+    }
+
+    /// Real Nix stores references in a `std::set<StorePath>` and always
+    /// computes the fingerprint from that canonical (sorted) order — it
+    /// never trusts the narinfo text's order. A shuffled References: line
+    /// (whether from a non-Nix tool, manual editing, or an adversary) must
+    /// still produce the SAME fingerprint as the canonically-ordered one,
+    /// or verification against a real Nix-issued signature would spuriously
+    /// fail. This was a real, previously-untested gap: every fixture this
+    /// crate had used happened to already be canonically ordered.
+    #[test]
+    fn fingerprint_is_invariant_to_reference_order_in_text() {
+        let shuffled = SAMPLE.replace(
+            "References: 00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37 q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66",
+            "References: q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66 00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37",
+        );
+        assert_ne!(shuffled, SAMPLE, "the replace must actually have matched");
+
+        let canonical_fp = NarInfo::parse(SAMPLE).unwrap().fingerprint().unwrap();
+        let shuffled_fp = NarInfo::parse(&shuffled).unwrap().fingerprint().unwrap();
+        assert_eq!(
+            canonical_fp, shuffled_fp,
+            "fingerprint must be invariant to References: text order"
         );
     }
 

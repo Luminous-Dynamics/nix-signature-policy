@@ -1,7 +1,7 @@
 //! Sign/verify/parse cost benchmarks. Sizes are already measured by hand
-//! (see README: dual-signing adds ~4.6KB/narinfo, dominated by the ~3.3KB
-//! ML-DSA-65 signature base64-inflated ~4/3x); this bench covers latency,
-//! which the earlier manual pass only eyeballed as "sub-second".
+//! (see README: the Sig-PQC: line alone adds ~4.4KB/narinfo, dominated by
+//! the 3309-byte ML-DSA-65 signature base64-inflated ~4/3x); this bench
+//! covers latency instead.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -47,7 +47,7 @@ fn bench_verify(c: &mut Criterion) {
     let verifying_keys = key.public().keys;
     c.bench_function("hybrid_verify", |b| {
         b.iter(|| {
-            mycelix_crypto::hybrid_sig::verify(&verifying_keys, fingerprint.as_bytes(), &sig)
+            nix_pqc_cache_proxy::hybrid::verify(&verifying_keys, fingerprint.as_bytes(), &sig)
                 .unwrap()
         })
     });

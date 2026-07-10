@@ -1,5 +1,5 @@
 //! Key generation/storage and the `Sig-PQC` wire encoding, built on top of
-//! `mycelix_crypto::hybrid_sig` (Ed25519 + ML-DSA-65, both halves required).
+//! `crate::hybrid` (Ed25519 + ML-DSA-65, both halves required).
 //!
 //! `Sig-PQC:` carries ONLY the ML-DSA signature — it deliberately does not
 //! duplicate the Ed25519 bytes already present in the same-keyname `Sig:`
@@ -10,8 +10,7 @@
 //! unmodified for backward compatibility, so there's nothing gained by
 //! also embedding a copy of it inside `Sig-PQC:`).
 //!
-//! `mycelix_crypto`'s `hybrid-rc` construction is EXPERIMENTAL and pending a
-//! crypto audit (see `mycelix-workspace/PQC_ROADMAP_2026-07-07.md`) — fine to
+//! `crate::hybrid`'s construction is EXPERIMENTAL and unaudited — fine to
 //! reuse for this exploratory prototype, not a claim of production readiness.
 
 use std::fs;
@@ -19,8 +18,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use mycelix_crypto::hybrid_sig::{HybridSignature, HybridSigner, HybridVerifyingKeys};
 
+use crate::hybrid::{
+    self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSignature, HybridSigner,
+    HybridVerifyingKeys, ML_DSA_65_PUBLIC_KEY_LEN, ML_DSA_65_SIGNATURE_LEN,
+};
 use crate::narinfo::{self, NarInfo};
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -74,7 +76,7 @@ impl SecretKey {
 /// ```text
 /// <name>
 /// ed25519:<base64 32B>
-/// ml-dsa-65:<base64 ~1952B>
+/// ml-dsa-65:<base64 1952B>
 /// ```
 pub struct PublicKey {
     pub name: String,
@@ -113,11 +115,17 @@ impl PublicKey {
             .strip_prefix("ml-dsa-65:")
             .ok_or_else(|| anyhow!("expected 'ml-dsa-65:' prefix"))?;
         let ed_bytes = B64.decode(ed_b64).context("base64 decode ed25519 pubkey")?;
-        let ed25519: [u8; 32] = ed_bytes
+        let ed25519: [u8; ED25519_PUBLIC_KEY_LEN] = ed_bytes
             .as_slice()
             .try_into()
-            .map_err(|_| anyhow!("ed25519 public key is not 32 bytes"))?;
+            .map_err(|_| anyhow!("ed25519 public key is not {ED25519_PUBLIC_KEY_LEN} bytes"))?;
         let ml_dsa = B64.decode(ml_b64).context("base64 decode ml-dsa pubkey")?;
+        if ml_dsa.len() != ML_DSA_65_PUBLIC_KEY_LEN {
+            bail!(
+                "ML-DSA-65 public key is {} bytes, expected exactly {ML_DSA_65_PUBLIC_KEY_LEN}",
+                ml_dsa.len()
+            );
+        }
         Ok(Self {
             name,
             keys: HybridVerifyingKeys { ed25519, ml_dsa },
@@ -139,7 +147,7 @@ pub fn strip_key_name(s: &str) -> &str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SigPqcAlgorithm {
-    /// ML-DSA-65 (~3309B) alone. The Ed25519 half lives in the same-keyname
+    /// ML-DSA-65 (3309B) alone. The Ed25519 half lives in the same-keyname
     /// `Sig:` line, not here — see [`verify_hybrid`].
     MlDsa65 = 1,
 }
@@ -167,22 +175,40 @@ pub fn encode_sig_pqc(name: &str, ml_dsa_sig: &[u8]) -> String {
 }
 
 /// Decode a `Sig-PQC:` line's value into `(name, algorithm, ml_dsa_sig_bytes)`.
+/// Enforces the exact expected signature length for the decoded algorithm at
+/// this codec boundary, rather than deferring entirely to the crypto
+/// backend — a wrong-length payload is rejected here, cleanly, with a
+/// specific error.
 pub fn decode_sig_pqc(entry: &str) -> Result<(String, SigPqcAlgorithm, Vec<u8>)> {
     let (name, bytes) = narinfo::parse_sig_entry(entry)?;
     let (&tag, rest) = bytes
         .split_first()
         .ok_or_else(|| anyhow!("empty Sig-PQC entry"))?;
     let algorithm = SigPqcAlgorithm::from_tag(tag)?;
+    match algorithm {
+        SigPqcAlgorithm::MlDsa65 => {
+            if rest.len() != ML_DSA_65_SIGNATURE_LEN {
+                bail!(
+                    "Sig-PQC ML-DSA-65 signature is {} bytes, expected exactly {ML_DSA_65_SIGNATURE_LEN}",
+                    rest.len()
+                );
+            }
+        }
+    }
     Ok((name, algorithm, rest.to_vec()))
 }
 
-/// Verify a hybrid signature for `keyname` on `info`: finds the
-/// same-keyname classical `Sig:` line (for the Ed25519 half) and
-/// `Sig-PQC:` line (for the ML-DSA half), and requires **both** to verify
-/// against `keys` over `fingerprint`. This is where "both halves required"
-/// actually lives now that the wire format no longer bundles them together
-/// — a `Sig-PQC:` entry with no matching `Sig:` line (or vice versa) fails
-/// closed rather than silently verifying on just one half.
+/// Verify a hybrid signature for `keyname` on `info`.
+///
+/// Tries **every** same-keyname classical `Sig:` candidate paired with
+/// **every** same-keyname `Sig-PQC:` candidate, and succeeds if **any**
+/// pairing verifies — matching Nix's own any-of-N-signatures trust model
+/// (`ValidPathInfo::checkSignatures` counts *any* good signature among
+/// possibly-many) rather than assuming exactly one of each ever appears.
+/// A malformed or unrecognized-algorithm `Sig-PQC:` candidate, or a
+/// wrong-length `Sig:` candidate, is treated as a failed candidate and
+/// skipped — never a hard abort that would block a different, valid
+/// same-keyname pairing elsewhere in the narinfo from being tried.
 pub fn verify_hybrid(
     info: &NarInfo,
     fingerprint: &str,
@@ -191,27 +217,45 @@ pub fn verify_hybrid(
 ) -> Result<()> {
     let prefix = format!("{keyname}:");
 
-    let ed_entry = info
+    let ed_candidates: Vec<[u8; ED25519_SIGNATURE_LEN]> = info
         .sigs
         .iter()
-        .find(|s| s.starts_with(&prefix))
-        .ok_or_else(|| anyhow!("no Sig: line for key '{keyname}' to pair with Sig-PQC"))?;
-    let (_name, ed_bytes) = narinfo::parse_sig_entry(ed_entry)?;
-    let ed25519: [u8; 64] = ed_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow!("ed25519 signature is not 64 bytes"))?;
+        .filter(|s| s.starts_with(&prefix))
+        .filter_map(|s| narinfo::parse_sig_entry(s).ok())
+        .filter_map(|(_name, bytes)| bytes.as_slice().try_into().ok())
+        .collect();
+    if ed_candidates.is_empty() {
+        bail!("no valid Sig: candidate for key '{keyname}' to pair with Sig-PQC");
+    }
 
-    let pqc_entry = info
+    let pqc_candidates: Vec<Vec<u8>> = info
         .sig_pqc
         .iter()
-        .find(|s| s.starts_with(&prefix))
-        .ok_or_else(|| anyhow!("no Sig-PQC: line for key '{keyname}'"))?;
-    let (_name, _algorithm, ml_dsa) = decode_sig_pqc(pqc_entry)?;
+        .filter(|s| s.starts_with(&prefix))
+        .filter_map(|s| decode_sig_pqc(s).ok())
+        .map(|(_name, _algorithm, ml_dsa)| ml_dsa)
+        .collect();
+    if pqc_candidates.is_empty() {
+        bail!("no valid Sig-PQC: candidate for key '{keyname}'");
+    }
 
-    let sig = HybridSignature { ed25519, ml_dsa };
-    mycelix_crypto::hybrid_sig::verify(keys, fingerprint.as_bytes(), &sig)
-        .map_err(|e| anyhow!("hybrid signature verification failed: {e}"))
+    for ed25519 in &ed_candidates {
+        for ml_dsa in &pqc_candidates {
+            let sig = HybridSignature {
+                ed25519: *ed25519,
+                ml_dsa: ml_dsa.clone(),
+            };
+            if hybrid::verify(keys, fingerprint.as_bytes(), &sig).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "no Sig:/Sig-PQC: pair for key '{keyname}' verified ({} classical x {} PQC candidates tried)",
+        ed_candidates.len(),
+        pqc_candidates.len()
+    ))
 }
 
 #[cfg(test)]
@@ -243,6 +287,22 @@ mod tests {
     }
 
     #[test]
+    fn public_key_load_rejects_wrong_length_ml_dsa_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad.pub");
+        fs::write(
+            &path,
+            format!(
+                "demo-1\ned25519:{}\nml-dsa-65:{}\n",
+                B64.encode([0u8; ED25519_PUBLIC_KEY_LEN]),
+                B64.encode([0u8; 100]), // nowhere near 1952 bytes
+            ),
+        )
+        .unwrap();
+        assert!(PublicKey::load(&path).is_err());
+    }
+
+    #[test]
     fn sig_pqc_encode_decode_round_trip() {
         let key = SecretKey::generate("demo-1");
         let msg = b"1;/nix/store/xxx-demo;sha256:abc;123;";
@@ -252,6 +312,17 @@ mod tests {
         assert_eq!(name, "demo-1");
         assert_eq!(algorithm, SigPqcAlgorithm::MlDsa65);
         assert_eq!(ml_dsa, sig.ml_dsa);
+    }
+
+    #[test]
+    fn decode_sig_pqc_rejects_wrong_length_ml_dsa_signature() {
+        let key = SecretKey::generate("demo-1");
+        let sig = key.signer.sign(b"whatever");
+        let mut truncated = sig.ml_dsa.clone();
+        truncated.truncate(100); // nowhere near ML_DSA_65_SIGNATURE_LEN
+        let entry = encode_sig_pqc(&key.name, &truncated);
+        let err = decode_sig_pqc(&entry).unwrap_err();
+        assert!(err.to_string().contains("expected exactly"));
     }
 
     fn narinfo_with(keyname: &str, sig: &HybridSignature) -> NarInfo {
@@ -280,8 +351,6 @@ mod tests {
 
     #[test]
     fn verify_hybrid_fails_without_matching_sig_line() {
-        // Sig-PQC present but no same-keyname Sig: line at all: must fail
-        // closed, not silently treat the missing classical half as fine.
         let key = SecretKey::generate("demo-1");
         let fingerprint = "1;/nix/store/xxx-demo;sha256:abc;123;";
         let sig = key.signer.sign(fingerprint.as_bytes());
@@ -293,8 +362,6 @@ mod tests {
 
     #[test]
     fn verify_hybrid_fails_without_matching_sig_pqc_line() {
-        // Sig: present but no same-keyname Sig-PQC: line: must fail closed
-        // too, not fall back to classical-only trust.
         let key = SecretKey::generate("demo-1");
         let fingerprint = "1;/nix/store/xxx-demo;sha256:abc;123;";
         let sig = key.signer.sign(fingerprint.as_bytes());
@@ -312,8 +379,10 @@ mod tests {
         let sig = key.signer.sign(fingerprint.as_bytes());
         let mut info = narinfo_with("demo-1", &sig);
 
-        // Flip a base64 character deep in the Sig-PQC value to corrupt the
-        // ML-DSA half while leaving the classical Sig: line untouched.
+        // Flip a base64 character deep in the Sig-PQC value (preserves
+        // decoded length, so this exercises the crypto check, not the
+        // length check) to corrupt the ML-DSA half while leaving the
+        // classical Sig: line untouched.
         let entry = &mut info.sig_pqc[0];
         let mid = entry.len() - 10;
         let bytes = unsafe { entry.as_bytes_mut() };
@@ -335,5 +404,79 @@ mod tests {
         let corrupted = format!("{name}:{}", B64.encode(&raw));
         let err = decode_sig_pqc(&corrupted).unwrap_err();
         assert!(err.to_string().contains("unknown Sig-PQC algorithm tag"));
+    }
+
+    #[test]
+    fn any_valid_pair_verifies_when_an_earlier_sig_pqc_candidate_is_invalid() {
+        // Two Sig-PQC entries under the SAME keyname: the first is corrupted
+        // garbage, the second is genuinely valid. A first-match-only
+        // implementation would wrongly reject this; verify_hybrid must try
+        // both and succeed on the second.
+        let key = SecretKey::generate("demo-1");
+        let fingerprint = "1;/nix/store/xxx-demo;sha256:abc;123;";
+        let sig = key.signer.sign(fingerprint.as_bytes());
+        let ed_b64 = B64.encode(sig.ed25519);
+
+        let mut bad_entry = encode_sig_pqc("demo-1", &sig.ml_dsa);
+        {
+            let mid = bad_entry.len() - 10;
+            let bytes = unsafe { bad_entry.as_bytes_mut() };
+            bytes[mid] = if bytes[mid] == b'A' { b'B' } else { b'A' };
+        }
+        let good_entry = encode_sig_pqc("demo-1", &sig.ml_dsa);
+
+        let mut info = NarInfo::default();
+        info.sigs.push(format!("demo-1:{ed_b64}"));
+        info.sig_pqc.push(bad_entry);
+        info.sig_pqc.push(good_entry);
+
+        verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys)
+            .expect("a later valid Sig-PQC candidate must still verify");
+    }
+
+    #[test]
+    fn any_valid_pair_verifies_when_an_earlier_sig_candidate_is_invalid() {
+        // Mirror case: two Sig: entries under the same keyname, first
+        // corrupted, second genuinely valid.
+        let key = SecretKey::generate("demo-1");
+        let fingerprint = "1;/nix/store/xxx-demo;sha256:abc;123;";
+        let sig = key.signer.sign(fingerprint.as_bytes());
+
+        let mut bad_ed = sig.ed25519;
+        bad_ed[0] ^= 0xFF;
+        let bad_sig_line = format!("demo-1:{}", B64.encode(bad_ed));
+        let good_sig_line = format!("demo-1:{}", B64.encode(sig.ed25519));
+
+        let mut info = NarInfo::default();
+        info.sigs.push(bad_sig_line);
+        info.sigs.push(good_sig_line);
+        info.sig_pqc.push(encode_sig_pqc("demo-1", &sig.ml_dsa));
+
+        verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys)
+            .expect("a later valid Sig candidate must still verify");
+    }
+
+    #[test]
+    fn unknown_tag_sig_pqc_candidate_does_not_block_a_later_valid_one() {
+        let key = SecretKey::generate("demo-1");
+        let fingerprint = "1;/nix/store/xxx-demo;sha256:abc;123;";
+        let sig = key.signer.sign(fingerprint.as_bytes());
+        let ed_b64 = B64.encode(sig.ed25519);
+
+        let good_entry = encode_sig_pqc("demo-1", &sig.ml_dsa);
+        let unknown_tag_entry = {
+            let (name, b64) = good_entry.split_once(':').unwrap();
+            let mut raw = B64.decode(b64).unwrap();
+            raw[0] = 250; // unrecognized future algorithm tag
+            format!("{name}:{}", B64.encode(&raw))
+        };
+
+        let mut info = NarInfo::default();
+        info.sigs.push(format!("demo-1:{ed_b64}"));
+        info.sig_pqc.push(unknown_tag_entry);
+        info.sig_pqc.push(good_entry);
+
+        verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys)
+            .expect("an unrecognized-tag candidate must not block a later valid one");
     }
 }

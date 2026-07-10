@@ -1,0 +1,25 @@
+{
+  "description": "Sig-PQC:'s tag byte and base64 are both well-formed, but the ML-DSA payload is truncated to 100 bytes instead of the real ML-DSA-65 length of 3309 bytes. Must be rejected at the codec boundary (decode_sig_pqc) with a specific length-mismatch error, not deferred silently to the crypto backend.",
+  "ed25519_public_key_b64": "YtdwrNyXKaCc3azptenN6Wpt24M0wfiWTFSxwgShtNs=",
+  "expected": {
+    "hybrid_valid": false
+  },
+  "fingerprint": "1;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37;sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48;1654112;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37,/nix/store/q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66",
+  "keyname": "test-vector-key-1",
+  "ml_dsa_65_public_key_b64": "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",
+  "narinfo_fields": {
+    "nar_hash": "sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48",
+    "nar_size": 1654112,
+    "references": [
+      "00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37",
+      "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66"
+    ],
+    "store_path": "/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37"
+  },
+  "sig_lines": [
+    "Sig: test-vector-key-1:+CL/lF8vPgVGkXfIWScti60q3z9CkKylKls8/UBXM3G3ctNqUsaE4QlE4vunEruXOzOt/tb1iiPLqw+2l5ivCQ=="
+  ],
+  "sig_pqc_lines": [
+    "Sig-PQC: test-vector-key-1:AYEkx/POI/kihza0QhNz+uGZSIGdrSbQGtlC8iG7Wc6outQaUgy0AWGsdY1KfnoY+DSLNczSMK7buoMNwFQ46+WQf8xoLRFyrP5fywq/CuZM8Df9hm9p9DQA7CY4UNpDr84R+M0="
+  ]
+}
