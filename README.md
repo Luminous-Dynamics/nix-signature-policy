@@ -25,6 +25,9 @@ invention for this prototype, not a Nix or IETF spec.
 
 ## What's here
 
+- `src/lib.rs` — library crate (`narinfo`/`keys`/`proxy` modules) so
+  integration tests and the criterion bench can exercise the logic directly;
+  `src/main.rs` is a thin CLI wrapper over it.
 - `src/narinfo.rs` — hand-rolled `.narinfo` parser/serializer + the Nix v1
   signing fingerprint (`1;<path>;<narhash>;<narsize>;<refs>`). Verified
   bit-compatible with real Nix: a frozen fixture (a real narinfo fetched from
@@ -32,15 +35,38 @@ invention for this prototype, not a Nix or IETF spec.
   → **Ed25519 verify against the real `cache.nixos.org-1` public key**, and
   that verification actually passes.
 - `src/keys.rs` — hybrid key generation/storage on top of
-  `mycelix_crypto::hybrid_sig::HybridSigner`, and the `Sig-PQC:` wire encoding
-  (`name:base64(ed25519(64B) || ml_dsa)`).
+  `mycelix_crypto::hybrid_sig::HybridSigner`, and the `Sig-PQC:` wire encoding:
+  `name:base64(alg_tag(1B) || ed25519(64B) || ml_dsa)`. The leading tag byte
+  (`SigPqcAlgorithm`, currently one variant, `HybridEd25519MlDsa65 = 1`) makes
+  the format self-describing — a future ML-DSA-87 or Falcon variant is a new
+  enum arm, not a format rewrite, and an entry tagged with an algorithm this
+  build doesn't understand is rejected cleanly rather than silently misparsed.
 - `src/proxy.rs` — an axum reverse proxy speaking the Nix HTTP binary-cache
   protocol: fetches `nix-cache-info` / `.narinfo` / `nar/*` from a configured
   upstream, verifies the upstream's `Sig:` against a configured public key,
   and re-serves the narinfo with an added `Sig:` (same key material, so
   ordinary `nix` needs zero awareness of the hybrid format) plus `Sig-PQC:`.
+  `.narinfo` text is buffered (it has to be — we parse and mutate it), but
+  NAR bytes are streamed straight through (`axum::body::Body::from_stream`)
+  rather than buffered, since a real store path can be gigabytes.
 - CLI: `keygen`, `sign <cache_dir>`, `verify <narinfo> [--require-pqc]`,
   `proxy`.
+
+## Testing
+
+- `cargo test` — unit tests (`src/`) plus `tests/proxy_e2e.rs`, a **hermetic**
+  integration suite: an in-process fake upstream binary cache (its own
+  throwaway Ed25519 key, real HTTP on an OS-assigned port) plus our real
+  proxy in front of it, no network or `nix` binary required. Covers narinfo
+  augmentation (both `Sig:` and `Sig-PQC:` verify), fail-closed behavior on
+  an unverifiable upstream signature, byte-exact 5MB NAR streaming, and
+  `nix-cache-info` passthrough. Fast (well under a second) and safe to run
+  anywhere, including CI.
+- `tests/real_nix_e2e.rs` — the full real-`nix` proof (see next section),
+  `#[ignore]`d since it needs `nix`, network, and `python3`. Run explicitly:
+  `cargo test --test real_nix_e2e -- --ignored --nocapture`.
+- `cargo bench` — `benches/pqc_bench.rs`, timing keygen/sign/verify/encode
+  and narinfo parse/serialize against a real captured narinfo fixture.
 
 ## Real measurements from this pass
 
@@ -58,9 +84,13 @@ invention for this prototype, not a Nix or IETF spec.
 
 ## End-to-end verification actually performed
 
-1. `cargo test` — 10/10 pass, including a real (not fabricated) narinfo
-   fixture verifying against the real `cache.nixos.org-1` Ed25519 key, and
-   deliberate corruption tests for both the classical and ML-DSA halves.
+Originally done by hand; now codified as `tests/real_nix_e2e.rs` (see
+Testing above) so it's a repeatable proof, not a one-off transcript:
+
+1. `cargo test` — unit + hermetic integration tests pass, including a real
+   (not fabricated) narinfo fixture verifying against the real
+   `cache.nixos.org-1` Ed25519 key, and deliberate corruption tests for both
+   the classical and ML-DSA halves (plus an unknown-algorithm-tag rejection).
 2. Built `nixpkgs#hello` for real, `nix copy`'d its closure (5 store paths)
    to a local `file://` binary cache.
 3. `keygen` a hybrid key; `sign` the local cache — all 5 narinfo files

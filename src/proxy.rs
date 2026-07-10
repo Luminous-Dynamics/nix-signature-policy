@@ -6,20 +6,24 @@
 //! own classical `Sig:`, so a client can trust this proxy's key alone).
 //!
 //! Scope note: this does not make the upstream itself PQC-signed — it's a
-//! local trust-translation boundary. NAR bytes and narinfo text are buffered
-//! fully in memory, which is fine for a prototype/demo and not how a
-//! production proxy would handle large store paths.
+//! local trust-translation boundary. `.narinfo` text is small (a few KB even
+//! dual-signed) and is buffered/parsed in memory, which is unavoidable since
+//! we mutate it before re-serving. NAR bytes are NOT buffered — they can be
+//! gigabytes for a real store path, so `handle_nar` streams the upstream
+//! response body straight through instead of loading it whole.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use base64::Engine;
+use futures_util::TryStreamExt;
 
 use crate::keys::{self, SecretKey};
 use crate::narinfo::{self, NarInfo};
@@ -49,6 +53,8 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
     }
 }
 
+/// CLI entry point: loads the key, binds `listen`, prints connection info,
+/// then hands off to [`serve`].
 pub async fn run(
     upstream: String,
     upstream_pubkey: String,
@@ -56,17 +62,34 @@ pub async fn run(
     listen: String,
 ) -> Result<()> {
     let secret = SecretKey::load(&key_path)?;
-    let upstream_pubkey = keys::strip_key_name(&upstream_pubkey).to_string();
-    let client = reqwest::Client::builder().build()?;
+    let listener = tokio::net::TcpListener::bind(&listen).await?;
+    let local_addr = listener.local_addr()?;
 
     println!("nix-pqc-cache-proxy: signing as '{}'", secret.name);
     println!("nix-pqc-cache-proxy: upstream = {upstream}");
-    println!("nix-pqc-cache-proxy: listening on http://{listen}");
+    println!("nix-pqc-cache-proxy: listening on http://{local_addr}");
     println!(
-        "  point nix at it with: --extra-substituters http://{listen} --extra-trusted-public-keys '{}:{}'",
+        "  point nix at it with: --extra-substituters http://{local_addr} --extra-trusted-public-keys '{}:{}'",
         secret.name,
         base64::engine::general_purpose::STANDARD.encode(secret.public().keys.ed25519)
     );
+
+    serve(listener, upstream, upstream_pubkey, secret).await
+}
+
+/// Build the router and serve it on an already-bound listener. Split out
+/// from [`run`] so tests can bind an ephemeral port (`127.0.0.1:0`), read
+/// back the real address via `listener.local_addr()`, and hand a live
+/// `SecretKey` straight in — without needing a CLI-facing key file or
+/// waiting on `run`'s startup printing.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    upstream: String,
+    upstream_pubkey: String,
+    secret: SecretKey,
+) -> Result<()> {
+    let upstream_pubkey = keys::strip_key_name(&upstream_pubkey).to_string();
+    let client = reqwest::Client::builder().build()?;
 
     let state = Arc::new(ProxyState {
         upstream,
@@ -86,7 +109,6 @@ pub async fn run(
         .route("/nar/{file}", get(handle_nar))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -155,6 +177,11 @@ async fn handle_nar(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let bytes = resp.bytes().await?;
-    Ok((status, [("content-type", content_type)], bytes.to_vec()).into_response())
+    // NAR files can be gigabytes (a real store path's compressed archive) —
+    // stream chunks straight from upstream to the client instead of
+    // buffering the whole body, unlike the narinfo handler above (which
+    // must buffer, since it parses and mutates the text before re-serving).
+    let stream = resp.bytes_stream().map_err(std::io::Error::other);
+    let body = Body::from_stream(stream);
+    Ok((status, [("content-type", content_type)], body).into_response())
 }

@@ -1,14 +1,11 @@
-mod keys;
-mod narinfo;
-mod proxy;
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use keys::{PublicKey, SecretKey};
-use narinfo::NarInfo;
+use nix_pqc_cache_proxy::keys::{self, PublicKey, SecretKey};
+use nix_pqc_cache_proxy::narinfo::{self, NarInfo};
+use nix_pqc_cache_proxy::proxy;
 
 /// Prototype: hybrid Ed25519+ML-DSA-65 signing/verification for Nix binary
 /// caches, plus a local trust-translating reverse proxy.
@@ -178,7 +175,7 @@ fn cmd_verify(
     if let Some(pqc_pubkey_path) = pqc_pubkey_path {
         let pk = PublicKey::load(pqc_pubkey_path)?;
         for entry in &info.sig_pqc {
-            let (_name, sig) = keys::decode_sig_pqc(entry)?;
+            let (_name, _algorithm, sig) = keys::decode_sig_pqc(entry)?;
             if mycelix_crypto::hybrid_sig::verify(&pk.keys, fingerprint.as_bytes(), &sig).is_ok() {
                 pqc_ok = true;
                 break;

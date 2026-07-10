@@ -120,26 +120,55 @@ pub fn strip_key_name(s: &str) -> &str {
     s.rsplit_once(':').map(|(_, b)| b).unwrap_or(s)
 }
 
+/// Which PQC construction a `Sig-PQC:` entry uses. A single variant today,
+/// but giving the wire format an explicit tag means a future ML-DSA-87 or
+/// Falcon variant is a new enum arm, not a format rewrite — and an entry
+/// tagged with an algorithm this build doesn't understand is rejected
+/// cleanly instead of being silently misparsed as if it were this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SigPqcAlgorithm {
+    /// Ed25519 (64B) || ML-DSA-65 (~3309B), both halves required to verify.
+    HybridEd25519MlDsa65 = 1,
+}
+
+impl SigPqcAlgorithm {
+    fn from_tag(tag: u8) -> Result<Self> {
+        match tag {
+            1 => Ok(Self::HybridEd25519MlDsa65),
+            other => bail!(
+                "unknown Sig-PQC algorithm tag {other}; this build only understands \
+                 HybridEd25519MlDsa65 (tag 1)"
+            ),
+        }
+    }
+}
+
 /// Encode a hybrid signature for a narinfo `Sig-PQC:` line:
-/// `<name>:<base64(ed25519(64B) || ml_dsa)>`.
+/// `<name>:<base64(alg_tag(1B) || ed25519(64B) || ml_dsa)>`.
 pub fn encode_sig_pqc(name: &str, sig: &HybridSignature) -> String {
-    let mut buf = Vec::with_capacity(64 + sig.ml_dsa.len());
+    let mut buf = Vec::with_capacity(1 + 64 + sig.ml_dsa.len());
+    buf.push(SigPqcAlgorithm::HybridEd25519MlDsa65 as u8);
     buf.extend_from_slice(&sig.ed25519);
     buf.extend_from_slice(&sig.ml_dsa);
     format!("{name}:{}", B64.encode(buf))
 }
 
-/// Decode a `Sig-PQC:` line's value back into `(name, HybridSignature)`.
-pub fn decode_sig_pqc(entry: &str) -> Result<(String, HybridSignature)> {
+/// Decode a `Sig-PQC:` line's value back into `(name, algorithm, HybridSignature)`.
+pub fn decode_sig_pqc(entry: &str) -> Result<(String, SigPqcAlgorithm, HybridSignature)> {
     let (name, bytes) = crate::narinfo::parse_sig_entry(entry)?;
-    if bytes.len() < 64 {
+    let (&tag, rest) = bytes
+        .split_first()
+        .ok_or_else(|| anyhow!("empty Sig-PQC entry"))?;
+    let algorithm = SigPqcAlgorithm::from_tag(tag)?;
+    if rest.len() < 64 {
         bail!("Sig-PQC entry shorter than the Ed25519 half alone");
     }
-    let ed25519: [u8; 64] = bytes[..64]
+    let ed25519: [u8; 64] = rest[..64]
         .try_into()
         .expect("slice of len 64 always converts");
-    let ml_dsa = bytes[64..].to_vec();
-    Ok((name, HybridSignature { ed25519, ml_dsa }))
+    let ml_dsa = rest[64..].to_vec();
+    Ok((name, algorithm, HybridSignature { ed25519, ml_dsa }))
 }
 
 #[cfg(test)]
@@ -176,8 +205,9 @@ mod tests {
         let msg = b"1;/nix/store/xxx-demo;sha256:abc;123;";
         let sig = key.signer.sign(msg);
         let entry = encode_sig_pqc(&key.name, &sig);
-        let (name, decoded) = decode_sig_pqc(&entry).unwrap();
+        let (name, algorithm, decoded) = decode_sig_pqc(&entry).unwrap();
         assert_eq!(name, "demo-1");
+        assert_eq!(algorithm, SigPqcAlgorithm::HybridEd25519MlDsa65);
         mycelix_crypto::hybrid_sig::verify(&key.public().keys, msg, &decoded)
             .expect("decoded hybrid signature must verify");
     }
@@ -188,12 +218,27 @@ mod tests {
         let msg = b"needs both halves";
         let sig = key.signer.sign(msg);
         let mut entry = encode_sig_pqc(&key.name, &sig);
-        // Flip a base64 character deep in the string (well past the 64-byte
-        // ed25519 prefix once decoded) to corrupt only the ML-DSA half.
+        // Flip a base64 character deep in the string (well past the tag byte
+        // and 64-byte ed25519 prefix once decoded) to corrupt only the ML-DSA half.
         let mid = entry.len() - 10;
         let bytes = unsafe { entry.as_bytes_mut() };
         bytes[mid] = if bytes[mid] == b'A' { b'B' } else { b'A' };
-        let (_name, decoded) = decode_sig_pqc(&entry).unwrap();
+        let (_name, _algorithm, decoded) = decode_sig_pqc(&entry).unwrap();
         assert!(mycelix_crypto::hybrid_sig::verify(&key.public().keys, msg, &decoded).is_err());
+    }
+
+    #[test]
+    fn unknown_algorithm_tag_is_rejected() {
+        let key = SecretKey::generate("demo-1");
+        let sig = key.signer.sign(b"whatever");
+        let entry = encode_sig_pqc(&key.name, &sig);
+        // Corrupt just the leading algorithm-tag byte (base64 char 0) to an
+        // encoding of a tag this build doesn't recognize.
+        let (name, b64) = entry.split_once(':').unwrap();
+        let mut raw = B64.decode(b64).unwrap();
+        raw[0] = 99; // no such algorithm
+        let corrupted = format!("{name}:{}", B64.encode(&raw));
+        let err = decode_sig_pqc(&corrupted).unwrap_err();
+        assert!(err.to_string().contains("unknown Sig-PQC algorithm tag"));
     }
 }
