@@ -384,6 +384,19 @@ exactly one PQC algorithm," which is all this RFC proposes.
   Ed25519's typical sub-100µs). Negligible per individual fetch against
   network I/O, but non-trivial at cache-population or CI scale doing
   millions of verifications.
+- **Ongoing maintenance of a new PQC dependency has no named owner.**
+  Whichever of `liboqs` (`cppnix`) or a pure-Rust ML-DSA crate (`tvix`)
+  gets used, someone needs to track NIST parameter updates, patch CVEs in
+  that dependency, and keep it building as Nix's own toolchain moves.
+  This RFC does not currently name a long-term maintainer. This matches
+  this repository's own documented norm rather than being a special gap
+  unique to this proposal -- the RFC process README is explicit that
+  authors "should not expect that other project developers will take on
+  responsibility for implementing their accepted feature," and that
+  authoring the implementation is "by far the most effective way to see
+  an RFC through to completion." Concretely, this is a question the
+  author needs to answer before or during shepherding, not something this
+  draft resolves for them.
 
 # Alternatives
 [alternatives]: #alternatives
@@ -398,6 +411,20 @@ exactly one PQC algorithm," which is all this RFC proposes.
   primary standardized signature recommendation; the algorithm-tag design
   in the wire format exists specifically so Falcon or another scheme could
   be added later without another format change.
+- **ML-DSA-44 or ML-DSA-87 instead of ML-DSA-65.** FIPS 204 defines three
+  parameter sets, corresponding to NIST security categories 2, 3, and 5,
+  with published signature sizes of roughly 2420 / 3309 / 4627 bytes
+  respectively (the 3309-byte figure is the one this prototype actually
+  measured empirically; the other two are the standard's published sizes,
+  not independently re-verified here). This proposal uses ML-DSA-65
+  (category 3) as a middle-ground default: category 2 trims signature size
+  at a lower security margin, which seems like the wrong tradeoff given the
+  whole point of this proposal is defending against a well-resourced
+  adversary with a CRQC; category 5 costs meaningfully more per-narinfo
+  overhead for a security-margin increase this proposal doesn't have a
+  specific justification for over category 3. This is a judgment call, not
+  a settled analysis — the algorithm-tag design means the parameter set is
+  exactly as easy to revisit later as the algorithm choice itself.
 - **Embedding a copy of the Ed25519 signature inside `Sig-PQC:`.** This
   RFC's prototype did this in an earlier draft; removed once nobody could
   articulate a benefit that outweighed the extra ~88 base64 characters per
