@@ -58,7 +58,7 @@ fn bench_sig_pqc_encode(c: &mut Criterion) {
     let fingerprint = sample_narinfo().fingerprint().unwrap();
     let sig = key.signer.sign(fingerprint.as_bytes());
     c.bench_function("sig_pqc_encode", |b| {
-        b.iter(|| nix_pqc_cache_proxy::keys::encode_sig_pqc("bench-key", &sig))
+        b.iter(|| nix_pqc_cache_proxy::keys::encode_sig_pqc("bench-key", &sig.ml_dsa))
     });
 }
 

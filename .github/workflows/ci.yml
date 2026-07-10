@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Hermetic suite only (45 tests: unit + proxy_e2e + test_vectors).
+      # tests/real_nix_e2e.rs is #[ignore]d here and run in its own job below.
+      - run: cargo test --locked
+
+  build-benches-and-examples:
+    name: Build benches + examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cargo test`/`cargo build` alone never compile benches/ or examples/.
+      # This exists specifically to catch that class of bug: an earlier
+      # commit had a bench that didn't type-check (encode_sig_pqc expects
+      # &[u8], was passed a whole HybridSignature) and nothing caught it
+      # until a manual `cargo check --benches` run.
+      - run: cargo check --benches --examples --locked
+
+  msrv:
+    name: MSRV (Rust 1.85, edition 2024 floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-targets --locked
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --locked
+
+  real-nix-e2e:
+    name: Real Nix end-to-end proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: DeterminateSystems/nix-installer-action@main
+      # This is the actual claim the README/RFC make: a real, unmodified
+      # `nix` trusts a hybrid-resigned narinfo through our real proxy, via
+      # `nix store verify` (not just our own crypto self-checks). Builds
+      # nixpkgs#hello for real, so this job is slower than the others.
+      - run: cargo test --locked --test real_nix_e2e -- --ignored --nocapture
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      # This crate is explicitly unaudited/experimental crypto (see
+      # README), but its *dependencies* (axum, reqwest, tokio, ed25519-dalek,
+      # ml-dsa, ...) should still be watched for known advisories.
+      - run: cargo audit --locked

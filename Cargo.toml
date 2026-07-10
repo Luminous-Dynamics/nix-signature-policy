@@ -1,7 +1,8 @@
 [package]
 name = "nix-pqc-cache-proxy"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "Prototype: hybrid Ed25519+ML-DSA-65 signing/verification for Nix binary caches, plus a local trust-translating reverse proxy"
 license = "AGPL-3.0-or-later"
 publish = false
