@@ -137,7 +137,8 @@ fn cmd_sign(cache_dir: &Path, key_path: &Path) -> Result<()> {
         let ed_b64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig.ed25519);
         info.sigs.push(format!("{}:{}", secret.name, ed_b64));
-        info.sig_pqc.push(keys::encode_sig_pqc(&secret.name, &sig));
+        info.sig_pqc
+            .push(keys::encode_sig_pqc(&secret.name, &sig.ml_dsa));
 
         std::fs::write(&path, info.to_text())?;
         count += 1;
@@ -175,8 +176,8 @@ fn cmd_verify(
     if let Some(pqc_pubkey_path) = pqc_pubkey_path {
         let pk = PublicKey::load(pqc_pubkey_path)?;
         for entry in &info.sig_pqc {
-            let (_name, _algorithm, sig) = keys::decode_sig_pqc(entry)?;
-            if mycelix_crypto::hybrid_sig::verify(&pk.keys, fingerprint.as_bytes(), &sig).is_ok() {
+            let (name, _algorithm, _ml_dsa) = keys::decode_sig_pqc(entry)?;
+            if keys::verify_hybrid(&info, &fingerprint, &name, &pk.keys).is_ok() {
                 pqc_ok = true;
                 break;
             }

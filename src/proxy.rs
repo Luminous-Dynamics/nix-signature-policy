@@ -154,7 +154,7 @@ async fn handle_narinfo(
     let ed_b64 = base64::engine::general_purpose::STANDARD.encode(sig.ed25519);
     info.sigs.push(format!("{}:{}", state.secret.name, ed_b64));
     info.sig_pqc
-        .push(keys::encode_sig_pqc(&state.secret.name, &sig));
+        .push(keys::encode_sig_pqc(&state.secret.name, &sig.ml_dsa));
 
     Ok((
         StatusCode::OK,

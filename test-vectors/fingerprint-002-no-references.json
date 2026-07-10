@@ -1,0 +1,10 @@
+{
+  "description": "Zero-reference case. Real Nix narinfo emits 'References: ' (colon, space, nothing) for a path with no references -- the trailing space is significant and a naive parser that trims trailing whitespace before splitting on ': ' will fail to parse this line at all (a real bug this prototype hit and fixed).",
+  "expected_fingerprint": "1;/nix/store/aasbksznz37vw5pb26wq86209q5cmza8-xgcc-15.2.0-libgcc;sha256:0f3gg73cybjfnzlav06r5ndr4711wv2gjkgk2s0lghp2h3cy6db7;279624;",
+  "narinfo_fields": {
+    "nar_hash": "sha256:0f3gg73cybjfnzlav06r5ndr4711wv2gjkgk2s0lghp2h3cy6db7",
+    "nar_size": 279624,
+    "references": [],
+    "store_path": "/nix/store/aasbksznz37vw5pb26wq86209q5cmza8-xgcc-15.2.0-libgcc"
+  }
+}

@@ -27,6 +27,7 @@ ed25519-dalek = "2"
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
 rand = "0.8"
+serde_json = "1"
 
 [[bench]]
 name = "pqc_bench"

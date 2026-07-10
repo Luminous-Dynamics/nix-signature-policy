@@ -189,16 +189,17 @@ async fn proxy_augments_narinfo_with_hybrid_signature() {
             .any(|s| narinfo::verify_ed25519_sig(&fingerprint, s, &our_pk_b64).is_ok())
     );
 
-    // The hybrid Sig-PQC line is present and verifies both halves.
+    // The hybrid Sig-PQC line is present (carrying ONLY the ML-DSA half) and,
+    // paired with the same-keyname Sig: line above, verifies as a hybrid pair.
     assert_eq!(info.sig_pqc.len(), 1);
-    let (name, algorithm, sig) =
+    let (name, algorithm, _ml_dsa) =
         nix_pqc_cache_proxy::keys::decode_sig_pqc(&info.sig_pqc[0]).unwrap();
     assert_eq!(name, "test-proxy-1");
     assert_eq!(
         algorithm,
-        nix_pqc_cache_proxy::keys::SigPqcAlgorithm::HybridEd25519MlDsa65
+        nix_pqc_cache_proxy::keys::SigPqcAlgorithm::MlDsa65
     );
-    mycelix_crypto::hybrid_sig::verify(&secret.public().keys, fingerprint.as_bytes(), &sig)
+    nix_pqc_cache_proxy::keys::verify_hybrid(&info, &fingerprint, &name, &secret.public().keys)
         .expect("hybrid signature must verify");
 }
 

@@ -1,0 +1,13 @@
+{
+  "description": "Real narinfo (bash-5.2p37, fetched from cache.nixos.org 2026-07-10) with two references, one of them a self-reference. Verified separately (see narinfo.rs tests) to match Nix's own ValidPathInfo::fingerprint() by successfully checking the real cache.nixos.org Ed25519 signature against it.",
+  "expected_fingerprint": "1;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37;sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48;1654112;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37,/nix/store/q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66",
+  "narinfo_fields": {
+    "nar_hash": "sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48",
+    "nar_size": 1654112,
+    "references": [
+      "00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37",
+      "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66"
+    ],
+    "store_path": "/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37"
+  }
+}
