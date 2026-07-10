@@ -32,7 +32,10 @@ actual proposal.
 ## What's proven, and what isn't
 
 **Proven, by running real code against a real `nix` binary and real Nix
-source, not by assertion:**
+source (`NixOS/nix` commit `ac94798c753e48fd0b36128a029ed8aecebe9b56`,
+`master`, 2026-07-08; verified 2026-07-10 — pinned since `master` moves,
+re-check against current source before relying on this), not by
+assertion:**
 - Our narinfo fingerprint construction is byte-identical to real Nix's,
   including reference-order canonicalization (verified against
   `src/libstore/include/nix/store/path-info.hh`'s `StorePathSet` — see

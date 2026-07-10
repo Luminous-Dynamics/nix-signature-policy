@@ -83,9 +83,16 @@ impl NarInfo {
         Ok(info)
     }
 
-    /// Serialize back to `.narinfo` text. Field order matches real Nix output
-    /// so a hand-diff against upstream is easy; `Sig-PQC` lines are appended
-    /// last since ordinary `nix` never looks for them.
+    /// Serialize back to `.narinfo` text. This preserves **verification
+    /// semantics** (the fields that feed `fingerprint()`, and every
+    /// existing `Sig:`/new `Sig-PQC:` line), not the original narinfo's
+    /// exact byte layout — field order matches real Nix output for easy
+    /// hand-diffing, but any `extra` fields we don't model are re-emitted
+    /// in their original relative order rather than at their original
+    /// absolute position, and `Sig-PQC` lines are always appended last
+    /// since ordinary `nix` never looks for them. The proxy and `sign`
+    /// subcommand both rely on this being semantically faithful, not
+    /// byte-identical to whatever bytes were originally served.
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("StorePath: {}\n", self.store_path));

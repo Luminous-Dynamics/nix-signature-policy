@@ -12,15 +12,19 @@
 //! place.
 //!
 //! A hybrid signature is a pair `(ed25519_sig, ml_dsa65_sig)` over the
-//! *same* message; verification requires **both** to pass, so the scheme
-//! is at least as strong as the stronger of the two — classically secure
-//! via Ed25519, post-quantum secure via ML-DSA-65.
+//! *same* message; verification requires **both** to pass. Forgery
+//! therefore requires producing valid signatures under both schemes, so
+//! the hybrid remains unforgeable as long as at least one component
+//! signature scheme remains unforgeable, assuming independent keys and
+//! correct composition (this is not an informal claim of "adds the two
+//! security levels together" — it is the standard AND-composition
+//! argument for hybrid signatures).
 //!
 //! # Stability
 //! EXPERIMENTAL, unaudited. Fine to reuse for this exploratory prototype,
 //! not a claim of production readiness — see README.md's scope notes.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::{
     Signature as EdSignature, Signer as _, SigningKey as EdSigningKey, Verifier as _,
     VerifyingKey as EdVerifyingKey,
@@ -36,12 +40,22 @@ use rand::RngCore;
 pub const ED25519_SIGNATURE_LEN: usize = 64;
 /// Fixed byte length of an Ed25519 public key.
 pub const ED25519_PUBLIC_KEY_LEN: usize = 32;
+/// Fixed byte length of an Ed25519 secret key seed. Numerically identical
+/// to `ED25519_PUBLIC_KEY_LEN` but kept as a distinct constant since the
+/// two mean different things at call sites.
+pub const ED25519_SECRET_KEY_LEN: usize = 32;
 /// Fixed byte length of an ML-DSA-65 public key (FIPS 204), verified
 /// empirically against this crate's own generated keys.
 pub const ML_DSA_65_PUBLIC_KEY_LEN: usize = 1952;
 /// Fixed byte length of an ML-DSA-65 signature (FIPS 204), verified
 /// empirically against this crate's own generated signatures.
 pub const ML_DSA_65_SIGNATURE_LEN: usize = 3309;
+/// Fixed byte length of the ML-DSA-65 secret-key seed this crate persists
+/// (the compact seed form, not the expanded signing key), verified
+/// empirically against this crate's own generated keys.
+pub const ML_DSA_65_SECRET_SEED_LEN: usize = 32;
+/// Total persisted secret-signer length: `ed25519_secret(32) || ML-DSA-65 seed(32)`.
+pub const HYBRID_SECRET_KEY_LEN: usize = ED25519_SECRET_KEY_LEN + ML_DSA_65_SECRET_SEED_LEN;
 
 /// Hybrid signer holding both secret keys. Persist with
 /// [`to_bytes`](HybridSigner::to_bytes) / restore with
@@ -112,14 +126,17 @@ impl HybridSigner {
 
     /// Reconstruct a signer from [`to_bytes`](Self::to_bytes) output.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < ED25519_PUBLIC_KEY_LEN {
-            return Err(anyhow!("signer bytes too short"));
+        if bytes.len() != HYBRID_SECRET_KEY_LEN {
+            bail!(
+                "signer bytes are {} bytes, expected exactly {HYBRID_SECRET_KEY_LEN}",
+                bytes.len()
+            );
         }
-        let ed_sk: [u8; 32] = bytes[..32]
+        let ed_sk: [u8; ED25519_SECRET_KEY_LEN] = bytes[..ED25519_SECRET_KEY_LEN]
             .try_into()
-            .map_err(|_| anyhow!("bad ed25519 secret"))?;
+            .expect("length already checked above");
         let ed = EdSigningKey::from_bytes(&ed_sk);
-        let ml_dsa = MlSigningKey::<MlDsa65>::new_from_slice(&bytes[32..])
+        let ml_dsa = MlSigningKey::<MlDsa65>::new_from_slice(&bytes[ED25519_SECRET_KEY_LEN..])
             .map_err(|_| anyhow!("invalid ML-DSA signing key"))?;
         Ok(Self { ed, ml_dsa })
     }
@@ -182,6 +199,13 @@ mod tests {
             signer.verifying_keys().ed25519,
             restored.verifying_keys().ed25519
         );
+    }
+
+    #[test]
+    fn from_bytes_rejects_wrong_length() {
+        assert!(HybridSigner::from_bytes(&[0u8; HYBRID_SECRET_KEY_LEN - 1]).is_err());
+        assert!(HybridSigner::from_bytes(&[0u8; HYBRID_SECRET_KEY_LEN + 1]).is_err());
+        assert!(HybridSigner::from_bytes(&[]).is_err());
     }
 
     #[test]
