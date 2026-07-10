@@ -5,7 +5,7 @@ author: Tristan Stoltz (tstoltz)
 co-authors: (find a buddy later to help out with the RFC)
 shepherd-team: (names, to be nominated and accepted by RFC steering committee)
 shepherd-leader: (name to be appointed by RFC steering committee)
-related-issues: (prototype implementation currently private; see "Supporting prototype" below)
+related-issues: https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy
 ---
 
 # Summary
@@ -25,8 +25,8 @@ implementations and operators, not to the wire format.
 
 ## Supporting prototype
 
-This RFC is backed by a working, tested prototype (`nix-pqc-cache-proxy`,
-currently in a private monorepo, path available on request) that:
+This RFC is backed by a working, tested prototype
+(https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy) that:
 implements the exact narinfo fingerprint algorithm Nix uses (verified
 byte-for-byte against a real `cache.nixos.org`-signed narinfo and its real
 published Ed25519 key); dual-signs a local binary cache with a hybrid
