@@ -267,3 +267,16 @@ would land: `ValidPathInfo::fingerprint()`/`checkSignatures()`
 (`src/libstore/path-info.cc`), the `Signer` interface
 (`src/libutil/signature/signer.hh`), and `LocalStore::pathInfoIsUntrusted()`
 (`src/libstore/local-store.cc`).
+
+## License
+
+The crate (`src/`, `tests/`, `benches/`, `examples/`) is
+AGPL-3.0-or-later, per `Cargo.toml` and `LICENSE` — deliberate, since this
+is network-facing server software (the `proxy` subcommand) and
+modifications served over a network should stay open per the AGPL's intent.
+
+`test-vectors/*.json` is CC0-1.0 (`test-vectors/LICENSE`) instead: those
+exist specifically so an independent implementation (`tvix`, Cachix,
+Attic, ...) can copy them wholesale into its own test suite without
+inheriting a copyleft obligation on its own code. Copyleft-licensing pure
+interop test data would work against the one thing that directory is for.
