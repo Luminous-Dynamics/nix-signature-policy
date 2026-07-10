@@ -155,5 +155,16 @@ hybrid format is fully backward compatible — real `nix` never needs to know
 
 - No changes to the real Nix daemon/client source, no liboqs FFI, no attempt
   to make `cache.nixos.org` itself PQC-signed.
-- No RFC text yet — this prototype is what a future RFC would cite.
 - `mycelix-crypto` itself is untouched — consumed only via a path dependency.
+
+## RFC
+
+`rfc/0000-hybrid-binary-cache-signatures.md` — a draft NixOS RFC proposing
+this hybrid `Sig-PQC:` scheme upstream, following the real `NixOS/rfcs`
+template. Points at this prototype as supporting evidence and cites exact
+file/function names in real `NixOS/nix` source (verified against the
+GitHub repo, not reconstructed from memory) for where a real implementation
+would land: `ValidPathInfo::fingerprint()`/`checkSignatures()`
+(`src/libstore/path-info.cc`), the `Signer` interface
+(`src/libutil/signature/signer.hh`), and `LocalStore::pathInfoIsUntrusted()`
+(`src/libstore/local-store.cc`).
