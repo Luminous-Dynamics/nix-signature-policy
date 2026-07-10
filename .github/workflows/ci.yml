@@ -68,11 +68,11 @@ jobs:
       - run: cargo check --benches --examples --locked
 
   msrv:
-    name: MSRV (Rust 1.85, edition 2024 floor)
+    name: MSRV (Rust 1.86, edition 2024 floor)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.86
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets --locked
 
@@ -110,4 +110,6 @@ jobs:
       # This crate is explicitly unaudited/experimental crypto (see
       # README), but its *dependencies* (axum, reqwest, tokio, ed25519-dalek,
       # ml-dsa, ...) should still be watched for known advisories.
-      - run: cargo audit --locked
+      # (`--locked` is a cargo-build flag; cargo-audit doesn't accept it --
+      # it reads Cargo.lock directly.)
+      - run: cargo audit

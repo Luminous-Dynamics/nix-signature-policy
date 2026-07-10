@@ -150,8 +150,8 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
-        &[sig_pqc_line.clone()],
+        std::slice::from_ref(&sig_line),
+        std::slice::from_ref(&sig_pqc_line),
         true,
     );
 
@@ -167,8 +167,8 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
-        &[corrupted_pqc.clone()],
+        std::slice::from_ref(&sig_line),
+        std::slice::from_ref(&corrupted_pqc),
         false,
     );
 
@@ -185,8 +185,8 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
-        &[unknown_tag_pqc.clone()],
+        std::slice::from_ref(&sig_line),
+        std::slice::from_ref(&unknown_tag_pqc),
         false,
     );
 
@@ -203,7 +203,7 @@ fn write_signature_vectors(dir: &Path) {
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
         &[],
-        &[sig_pqc_line.clone()],
+        std::slice::from_ref(&sig_pqc_line),
         false,
     );
 
@@ -239,7 +239,7 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
+        std::slice::from_ref(&sig_line),
         &[malformed_base64],
         false,
     );
@@ -260,7 +260,7 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
+        std::slice::from_ref(&sig_line),
         &[wrong_size_pqc],
         false,
     );
@@ -279,7 +279,7 @@ fn write_signature_vectors(dir: &Path) {
         &key.name,
         &ed25519_pub_b64,
         &ml_dsa_pub_b64,
-        &[sig_line.clone()],
+        std::slice::from_ref(&sig_line),
         &[set_tag_byte(&sig_pqc_line, 250), sig_pqc_line.clone()],
         true,
     );
