@@ -1,5 +1,7 @@
 # nix-pqc-cache-proxy: self-contained reference-format prototype
 
+[![CI](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml)
+
 Not a production proxy, not a native Nix implementation, not audited
 crypto. What it is: a working, independently-buildable, test-vectored
 prototype of a hybrid Ed25519 + ML-DSA-65 signature scheme for Nix's
