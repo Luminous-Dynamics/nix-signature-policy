@@ -76,16 +76,28 @@ invention for this prototype, not a Nix or IETF spec.
   ~4/3×, plus the `Sig-PQC:` line prefix). For a cache with millions of
   narinfo entries this is a meaningful bandwidth/storage cost to weigh in any
   real spec.
-- **Sign/verify speed**: not machine-measured precisely in this pass (a
-  criterion bench like `mycelix-crypto/benches/pqc_bench.rs` would give real
-  numbers) — CLI keygen/sign/verify all completed sub-second per invocation
-  in manual testing, which is unsurprising for ML-DSA-65 but wasn't isolated
-  from process startup cost here.
+- **Sign/verify speed** — real numbers from `cargo bench` (`benches/pqc_bench.rs`,
+  this machine, debug ML-DSA-65 via `mycelix-crypto`'s RustCrypto backend):
+
+  | Operation | Time |
+  |---|---|
+  | `hybrid_keygen` | ~649 µs |
+  | `hybrid_sign_fingerprint` | ~1.04 ms |
+  | `hybrid_verify` | ~523 µs |
+  | `sig_pqc_encode` (base64 + tag) | ~5.76 µs |
+  | `narinfo_parse` | ~971 ns |
+  | `narinfo_to_text` | ~3.31 µs |
+
+  ML-DSA-65 sign/verify dominate, as expected — both are still sub-millisecond,
+  so at CLI/HTTP granularity this is negligible next to network I/O. The
+  earlier "sub-second, unisolated" guess undersold it: the real crypto cost
+  here is closer to a millisecond, not hundreds of milliseconds.
 
 ## End-to-end verification actually performed
 
-Originally done by hand; now codified as `tests/real_nix_e2e.rs` (see
-Testing above) so it's a repeatable proof, not a one-off transcript:
+Originally done by hand; now codified as `tests/real_nix_e2e.rs` and actually
+run (not just compiled) — **82.92s, PASSED** — so it's a repeatable, verified
+proof, not a one-off transcript:
 
 1. `cargo test` — unit + hermetic integration tests pass, including a real
    (not fabricated) narinfo fixture verifying against the real

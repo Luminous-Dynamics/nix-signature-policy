@@ -102,7 +102,7 @@ fn real_nix_trusts_our_hybrid_resigned_narinfo() {
     // 3. Serve the now-dual-signed cache over plain HTTP (matches the
     // README's manual steps: a real substituter is HTTP, not file://).
     let http_port = pick_free_port();
-    let mut http_server = KillOnDrop(
+    let http_server = KillOnDrop(
         Command::new("python3")
             .args(["-m", "http.server", &http_port.to_string()])
             .current_dir(&cache_dir)
@@ -118,7 +118,7 @@ fn real_nix_trusts_our_hybrid_resigned_narinfo() {
     // narinfo now — realistic "upstream already dual-signed by someone"
     // scenario, distinct from the hermetic tests' from-scratch fake upstream).
     let proxy_port = pick_free_port();
-    let mut proxy = KillOnDrop(
+    let proxy = KillOnDrop(
         Command::new(bin)
             .args(["proxy", "--upstream"])
             .arg(format!("http://127.0.0.1:{http_port}"))
