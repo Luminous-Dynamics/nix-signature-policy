@@ -175,19 +175,16 @@ async fn proxy_augments_narinfo_with_hybrid_signature() {
     // trusting only the upstream's key still trusts this response).
     assert_eq!(info.sigs.len(), 2, "expected upstream Sig + our added Sig");
     let upstream_pk_b64 = B64.encode(upstream.signing_key.verifying_key().to_bytes());
-    assert!(
-        info.sigs
-            .iter()
-            .any(|s| narinfo::verify_ed25519_sig(&fingerprint, s, &upstream_pk_b64).is_ok())
-    );
+    assert!(info.sigs.iter().any(|s| {
+        narinfo::verify_ed25519_sig(&fingerprint, s, Some("fake-upstream-1"), &upstream_pk_b64)
+            .is_ok()
+    }));
 
     // Our own classical Sig verifies too.
     let our_pk_b64 = B64.encode(secret.public().keys.ed25519);
-    assert!(
-        info.sigs
-            .iter()
-            .any(|s| narinfo::verify_ed25519_sig(&fingerprint, s, &our_pk_b64).is_ok())
-    );
+    assert!(info.sigs.iter().any(|s| {
+        narinfo::verify_ed25519_sig(&fingerprint, s, Some("test-proxy-1"), &our_pk_b64).is_ok()
+    }));
 
     // The hybrid Sig-PQC line is present (carrying ONLY the ML-DSA half) and,
     // paired with the same-keyname Sig: line above, verifies as a hybrid pair.

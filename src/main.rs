@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
 }
 
 fn cmd_keygen(name: &str, out_dir: &Path) -> Result<()> {
+    keys::validate_key_name(name)?;
     std::fs::create_dir_all(out_dir)?;
     let secret = SecretKey::generate(name);
     let secret_path = out_dir.join(format!("{name}.secret"));
@@ -156,16 +157,31 @@ fn cmd_verify(
     pqc_pubkey_path: Option<&Path>,
     require_pqc: bool,
 ) -> Result<()> {
+    // An empty verification policy (neither flag given) must never silently
+    // report success -- automation could easily read exit code 0 as "this
+    // narinfo is authenticated" when nothing was actually checked.
+    if pubkey_b64.is_none() && pqc_pubkey_path.is_none() {
+        bail!(
+            "no verification requested: pass --pubkey and/or --pqc-pubkey \
+             (verify with neither would otherwise report success without checking anything)"
+        );
+    }
+
     let text = std::fs::read_to_string(narinfo_path)?;
     let info = NarInfo::parse(&text)?;
     let fingerprint = info.fingerprint()?;
 
-    if let Some(pubkey_b64) = pubkey_b64 {
-        let pubkey_b64 = keys::strip_key_name(pubkey_b64);
-        let ok = info
-            .sigs
-            .iter()
-            .any(|s| narinfo::verify_ed25519_sig(&fingerprint, s, pubkey_b64).is_ok());
+    if let Some(pubkey_arg) = pubkey_b64 {
+        let (expected_name, pubkey_b64) = keys::parse_named_pubkey(pubkey_arg);
+        if expected_name.is_none() {
+            eprintln!(
+                "warning: --pubkey has no 'name:' prefix; matching any Sig: entry's name \
+                 (not enforcing key-name identity, unlike real Nix's trusted-public-keys)"
+            );
+        }
+        let ok = info.sigs.iter().any(|s| {
+            narinfo::verify_ed25519_sig(&fingerprint, s, expected_name, pubkey_b64).is_ok()
+        });
         if !ok {
             bail!("no Sig: line verified against the given classical public key");
         }
@@ -175,24 +191,18 @@ fn cmd_verify(
     let mut pqc_ok = false;
     if let Some(pqc_pubkey_path) = pqc_pubkey_path {
         let pk = PublicKey::load(pqc_pubkey_path)?;
-        for entry in &info.sig_pqc {
-            // A malformed or unrecognized-algorithm entry is a failed
-            // candidate, not a reason to abort checking the rest of the
-            // list -- one bad Sig-PQC line must never block a different,
-            // valid one elsewhere in the same narinfo.
-            let name = match keys::decode_sig_pqc(entry) {
-                Ok((name, _algorithm, _ml_dsa)) => name,
-                Err(_) => continue,
-            };
-            if keys::verify_hybrid(&info, &fingerprint, &name, &pk.keys).is_ok() {
-                pqc_ok = true;
-                break;
-            }
-        }
+        // Uses the loaded key's OWN name as the expected keyname -- not
+        // whatever name a Sig-PQC: entry happens to claim -- matching real
+        // Nix's name-first trusted-key lookup rather than trusting
+        // attacker-controlled narinfo text to say which key it's using.
+        pqc_ok = keys::verify_hybrid(&info, &fingerprint, &pk.name, &pk.keys).is_ok();
         if pqc_ok {
             println!("hybrid Sig-PQC (Ed25519+ML-DSA-65): OK");
         } else if require_pqc || !info.sig_pqc.is_empty() {
-            bail!("no Sig-PQC: line verified against the given hybrid public key");
+            bail!(
+                "no Sig-PQC: line verified against the given hybrid public key (name {:?})",
+                pk.name
+            );
         }
     }
 

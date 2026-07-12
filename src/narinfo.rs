@@ -172,11 +172,27 @@ pub fn parse_sig_entry(entry: &str) -> Result<(String, Vec<u8>)> {
 }
 
 /// Verify a raw Ed25519 `Sig:` entry against a known base64-encoded (32-byte)
-/// public key, mimicking exactly what real `nix` does for `trusted-public-keys`.
-pub fn verify_ed25519_sig(fingerprint: &str, sig_entry: &str, pubkey_b64: &str) -> Result<()> {
+/// public key, mimicking exactly what real `nix` does for `trusted-public-keys`
+/// — including name-first lookup: when `expected_name` is `Some`, the entry's
+/// own embedded name must match it before any crypto is even attempted (real
+/// Nix only tries a signature at all if its name is in the trusted set).
+/// `expected_name: None` skips that check, matching an unnamed configured
+/// key — real Nix's `trusted-public-keys` is always `name:base64`, so this
+/// escape hatch only exists for callers that haven't (yet) been given a name.
+pub fn verify_ed25519_sig(
+    fingerprint: &str,
+    sig_entry: &str,
+    expected_name: Option<&str>,
+    pubkey_b64: &str,
+) -> Result<()> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-    let (_name, sig_bytes) = parse_sig_entry(sig_entry)?;
+    let (name, sig_bytes) = parse_sig_entry(sig_entry)?;
+    if let Some(expected) = expected_name {
+        if name != expected {
+            bail!("Sig: key name {name:?} does not match expected {expected:?}");
+        }
+    }
     let sig_bytes: [u8; 64] = sig_bytes
         .as_slice()
         .try_into()
@@ -286,8 +302,13 @@ Sig: cache.nixos.org-1:DCeO+o0Q4DlnCPr8TeBZE77GhRlm11H9x609XtU7rUS69am2qkhX4zTsK
     fn real_signature_verifies_against_real_pubkey() {
         let info = NarInfo::parse(SAMPLE).unwrap();
         let fp = info.fingerprint().unwrap();
-        verify_ed25519_sig(&fp, &info.sigs[0], CACHE_NIXOS_ORG_PUBKEY)
-            .expect("real cache.nixos.org signature must verify");
+        verify_ed25519_sig(
+            &fp,
+            &info.sigs[0],
+            Some("cache.nixos.org-1"),
+            CACHE_NIXOS_ORG_PUBKEY,
+        )
+        .expect("real cache.nixos.org signature must verify");
     }
 
     #[test]
@@ -295,7 +316,37 @@ Sig: cache.nixos.org-1:DCeO+o0Q4DlnCPr8TeBZE77GhRlm11H9x609XtU7rUS69am2qkhX4zTsK
         let info = NarInfo::parse(SAMPLE).unwrap();
         let fp = info.fingerprint().unwrap();
         let tampered = fp.replace("1654112", "1654113");
-        assert!(verify_ed25519_sig(&tampered, &info.sigs[0], CACHE_NIXOS_ORG_PUBKEY).is_err());
+        assert!(
+            verify_ed25519_sig(
+                &tampered,
+                &info.sigs[0],
+                Some("cache.nixos.org-1"),
+                CACHE_NIXOS_ORG_PUBKEY
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mismatched_expected_name_is_rejected_even_with_correct_key() {
+        let info = NarInfo::parse(SAMPLE).unwrap();
+        let fp = info.fingerprint().unwrap();
+        let err = verify_ed25519_sig(
+            &fp,
+            &info.sigs[0],
+            Some("some-other-name"),
+            CACHE_NIXOS_ORG_PUBKEY,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not match expected"));
+    }
+
+    #[test]
+    fn unnamed_expectation_skips_name_check() {
+        let info = NarInfo::parse(SAMPLE).unwrap();
+        let fp = info.fingerprint().unwrap();
+        verify_ed25519_sig(&fp, &info.sigs[0], None, CACHE_NIXOS_ORG_PUBKEY)
+            .expect("None expected_name must not enforce a name match");
     }
 
     #[test]

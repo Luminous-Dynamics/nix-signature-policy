@@ -13,6 +13,7 @@
 //! `crate::hybrid`'s construction is EXPERIMENTAL and unaudited — fine to
 //! reuse for this exploratory prototype, not a claim of production readiness.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -20,8 +21,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 
 use crate::hybrid::{
-    self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSignature, HybridSigner,
-    HybridVerifyingKeys, ML_DSA_65_PUBLIC_KEY_LEN, ML_DSA_65_SIGNATURE_LEN,
+    self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSigner, HybridVerifyingKeys,
+    ML_DSA_65_PUBLIC_KEY_LEN, ML_DSA_65_SIGNATURE_LEN,
 };
 use crate::narinfo::{self, NarInfo};
 
@@ -44,7 +45,7 @@ impl SecretKey {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = format!("{}\n{}\n", self.name, B64.encode(self.signer.to_bytes()));
-        fs::write(path, body).with_context(|| format!("writing secret key to {path:?}"))
+        write_new_atomic(path, &body, true)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -91,7 +92,7 @@ impl PublicKey {
             B64.encode(self.keys.ed25519),
             B64.encode(&self.keys.ml_dsa),
         );
-        fs::write(path, body).with_context(|| format!("writing public key to {path:?}"))
+        write_new_atomic(path, &body, false)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -133,10 +134,99 @@ impl PublicKey {
     }
 }
 
-/// Strip an optional `name:` prefix from a key string, so `--upstream-pubkey`
-/// accepts either a bare base64 key or a `nix.conf`-style `name:base64` entry.
-pub fn strip_key_name(s: &str) -> &str {
-    s.rsplit_once(':').map(|(_, b)| b).unwrap_or(s)
+/// Split a `name:base64` (`nix.conf`'s `trusted-public-keys` style) or bare
+/// `base64` string into an optional key name and the base64 key material.
+/// A present name is later enforced against the `Sig:`/`Sig-PQC:` entry's
+/// own embedded name — matching real Nix's name-first trusted-key lookup —
+/// rather than accepting any same-byte-verifying signature regardless of
+/// what name it claims to carry. A bare key with no name degrades to the
+/// old permissive (name-blind) behavior; callers should warn when that
+/// happens.
+pub fn parse_named_pubkey(s: &str) -> (Option<&str>, &str) {
+    match s.split_once(':') {
+        Some((name, key)) => (Some(name), key),
+        None => (None, s),
+    }
+}
+
+/// Validate a key name intended both for the wire format and for use in
+/// filenames. This prototype embeds the name verbatim into narinfo
+/// `Sig:`/`Sig-PQC:` lines (`name:base64`) and into `keygen`'s output
+/// filenames — an unrestricted name could inject a colon (corrupting the
+/// `name:base64` split), a newline (injecting extra narinfo lines when
+/// signing), or path separators / `..` (escaping the configured output
+/// directory). Checked once at the CLI boundary (`keygen`), not on every
+/// internal construction, per this repo's "validate at system boundaries"
+/// convention.
+pub fn validate_key_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("key name must not be empty");
+    }
+    if name.len() > 128 {
+        bail!(
+            "key name must be at most 128 characters, got {}",
+            name.len()
+        );
+    }
+    if name == "." || name == ".." {
+        bail!("key name must not be '.' or '..'");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        bail!("key name {name:?} must contain only ASCII letters, digits, '.', '_', or '-'");
+    }
+    Ok(())
+}
+
+/// Write `contents` to a NEW file at `path`: created in a sibling temp file
+/// first (with mode 0600 on unix when `secret` is set, so no world/group
+/// readable window ever exists) and then renamed into place, so a reader
+/// never observes a partially-written file. Fails if `path` already exists
+/// at the initial check — best-effort, not a hard guarantee under a
+/// concurrent racing writer, but enough to stop an accidental `keygen`
+/// re-run from silently clobbering an existing secret (the old
+/// `fs::write` did so unconditionally, at umask-dependent permissions).
+fn write_new_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
+    if path.exists() {
+        bail!("refusing to overwrite existing file {path:?}");
+    }
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tmp_name = format!(
+        ".{}.tmp-{}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("key"),
+        std::process::id()
+    );
+    let tmp_path = dir.join(tmp_name);
+
+    let write_result = (|| -> Result<()> {
+        use std::io::Write;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(if secret { 0o600 } else { 0o644 });
+        }
+        let mut f = opts
+            .open(&tmp_path)
+            .with_context(|| format!("creating {tmp_path:?}"))?;
+        f.write_all(contents.as_bytes())
+            .with_context(|| format!("writing {tmp_path:?}"))?;
+        f.sync_all().ok();
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    fs::rename(&tmp_path, path).with_context(|| format!("renaming {tmp_path:?} -> {path:?}"))
 }
 
 /// Which PQC construction a `Sig-PQC:` entry uses. A single variant today,
@@ -209,6 +299,30 @@ pub fn decode_sig_pqc(entry: &str) -> Result<(String, SigPqcAlgorithm, Vec<u8>)>
 /// wrong-length `Sig:` candidate, is treated as a failed candidate and
 /// skipped — never a hard abort that would block a different, valid
 /// same-keyname pairing elsewhere in the narinfo from being tried.
+/// Cap on same-keyname candidate signatures considered per half. Bounds the
+/// work an attacker-controlled `.narinfo` (many repeated `Sig:`/`Sig-PQC:`
+/// lines under the same keyname) can force: with the O(n+m) verification
+/// below this is already linear rather than the old O(n×m), but a cap plus
+/// the dedup below keeps a single narinfo from forcing unbounded distinct
+/// crypto verifications regardless.
+const MAX_SIG_CANDIDATES: usize = 32;
+
+/// Verify a hybrid signature for `keyname` on `info`: **both** an Ed25519
+/// `Sig:` candidate and an ML-DSA `Sig-PQC:` candidate, same keyname, must
+/// verify against `keys` — but NOT necessarily the same textual pair.
+///
+/// Every candidate on a given half verifies against the *same* fixed
+/// `keys`/`fingerprint`, so "does any Sig: candidate verify" and "does any
+/// Sig-PQC: candidate verify" can be checked independently in O(n+m)
+/// instead of trying every classical×PQC pairing in O(n×m) — pairing a
+/// specific `Sig:` line with a specific `Sig-PQC:` line has no effect on
+/// the result, since neither half's verification depends on the other.
+/// This matches Nix's own any-of-N-signatures trust model
+/// (`ValidPathInfo::checkSignatures` counts *any* good signature among
+/// possibly-many) rather than assuming exactly one of each ever appears.
+/// A malformed, unrecognized-algorithm, wrong-length, or duplicate
+/// candidate is dropped during collection — never a hard abort that would
+/// block a different, valid candidate elsewhere in the narinfo.
 pub fn verify_hybrid(
     info: &NarInfo,
     fingerprint: &str,
@@ -216,51 +330,65 @@ pub fn verify_hybrid(
     keys: &HybridVerifyingKeys,
 ) -> Result<()> {
     let prefix = format!("{keyname}:");
+    let message = fingerprint.as_bytes();
 
+    let mut seen_ed = HashSet::new();
     let ed_candidates: Vec<[u8; ED25519_SIGNATURE_LEN]> = info
         .sigs
         .iter()
         .filter(|s| s.starts_with(&prefix))
         .filter_map(|s| narinfo::parse_sig_entry(s).ok())
         .filter_map(|(_name, bytes)| bytes.as_slice().try_into().ok())
+        .filter(|sig: &[u8; ED25519_SIGNATURE_LEN]| seen_ed.insert(*sig))
+        .take(MAX_SIG_CANDIDATES)
         .collect();
     if ed_candidates.is_empty() {
         bail!("no valid Sig: candidate for key '{keyname}' to pair with Sig-PQC");
     }
 
+    let mut seen_pqc = HashSet::new();
     let pqc_candidates: Vec<Vec<u8>> = info
         .sig_pqc
         .iter()
         .filter(|s| s.starts_with(&prefix))
         .filter_map(|s| decode_sig_pqc(s).ok())
         .map(|(_name, _algorithm, ml_dsa)| ml_dsa)
+        .filter(|sig| seen_pqc.insert(sig.clone()))
+        .take(MAX_SIG_CANDIDATES)
         .collect();
     if pqc_candidates.is_empty() {
         bail!("no valid Sig-PQC: candidate for key '{keyname}'");
     }
 
-    for ed25519 in &ed_candidates {
-        for ml_dsa in &pqc_candidates {
-            let sig = HybridSignature {
-                ed25519: *ed25519,
-                ml_dsa: ml_dsa.clone(),
-            };
-            if hybrid::verify(keys, fingerprint.as_bytes(), &sig).is_ok() {
-                return Ok(());
-            }
-        }
+    let ed_ok = ed_candidates
+        .iter()
+        .any(|sig| hybrid::verify_ed25519_only(&keys.ed25519, message, sig).is_ok());
+    if !ed_ok {
+        bail!(
+            "no Sig: candidate for key '{keyname}' verified against the classical half \
+             ({} candidate(s) tried)",
+            ed_candidates.len()
+        );
     }
 
-    Err(anyhow!(
-        "no Sig:/Sig-PQC: pair for key '{keyname}' verified ({} classical x {} PQC candidates tried)",
-        ed_candidates.len(),
-        pqc_candidates.len()
-    ))
+    let pqc_ok = pqc_candidates
+        .iter()
+        .any(|sig| hybrid::verify_ml_dsa_only(&keys.ml_dsa, message, sig).is_ok());
+    if !pqc_ok {
+        bail!(
+            "no Sig-PQC: candidate for key '{keyname}' verified against the ML-DSA half \
+             ({} candidate(s) tried)",
+            pqc_candidates.len()
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hybrid::HybridSignature;
     use tempfile::tempdir;
 
     #[test]

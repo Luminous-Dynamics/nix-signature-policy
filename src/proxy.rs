@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -28,11 +28,42 @@ use futures_util::TryStreamExt;
 use crate::keys::{self, SecretKey};
 use crate::narinfo::{self, NarInfo};
 
+/// Hard cap on a fetched `.narinfo` body. Real narinfo (even hybrid dual-
+/// signed: classical sig ~100B + ML-DSA-65 sig ~4.4KB base64-encoded) is a
+/// few KB; this is generous headroom, not a tight fit. Enforced while
+/// streaming (not only after full buffering) so a malicious or compromised
+/// upstream can't force unbounded memory use before we ever look at the
+/// content.
+const MAX_NARINFO_BYTES: usize = 64 * 1024;
+
+/// Hard cap on the (tiny, fixed-shape) `nix-cache-info` document.
+const MAX_CACHE_INFO_BYTES: usize = 4 * 1024;
+
 struct ProxyState {
     upstream: String,
     upstream_pubkey: String,
+    /// `None` when `--upstream-pubkey` was given without a `name:` prefix —
+    /// degrades to name-blind matching (see `keys::parse_named_pubkey`).
+    upstream_key_name: Option<String>,
     secret: SecretKey,
     client: reqwest::Client,
+}
+
+/// Read an HTTP response body up to `cap` bytes, erroring (not truncating)
+/// if it's exceeded — a truncated narinfo would fail to parse anyway, and
+/// silently truncating is worse than a clear error for a security-relevant
+/// boundary. Streams rather than trusting `Content-Length`, which a
+/// malicious/misbehaving upstream could simply omit or lie about.
+async fn read_capped(resp: reqwest::Response, cap: usize) -> Result<Vec<u8>> {
+    let mut stream = resp.bytes_stream();
+    let mut buf = Vec::new();
+    while let Some(chunk) = stream.try_next().await? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() > cap {
+            bail!("upstream response body exceeded the {cap}-byte cap");
+        }
+    }
+    Ok(buf)
 }
 
 struct AppError(anyhow::Error);
@@ -88,7 +119,16 @@ pub async fn serve(
     upstream_pubkey: String,
     secret: SecretKey,
 ) -> Result<()> {
-    let upstream_pubkey = keys::strip_key_name(&upstream_pubkey).to_string();
+    let (upstream_key_name, upstream_pubkey) = {
+        let (name, key) = keys::parse_named_pubkey(&upstream_pubkey);
+        (name.map(String::from), key.to_string())
+    };
+    if upstream_key_name.is_none() {
+        eprintln!(
+            "warning: --upstream-pubkey has no 'name:' prefix; matching any Sig: entry's name \
+             (not enforcing key-name identity, unlike real Nix's trusted-public-keys)"
+        );
+    }
     // Without a timeout, a hung or slow upstream would leave a request (and
     // the client waiting on it) stuck indefinitely.
     let client = reqwest::Client::builder()
@@ -98,6 +138,7 @@ pub async fn serve(
     let state = Arc::new(ProxyState {
         upstream,
         upstream_pubkey,
+        upstream_key_name,
         secret,
         client,
     });
@@ -121,8 +162,8 @@ async fn handle_cache_info(State(state): State<Arc<ProxyState>>) -> Result<Respo
     let url = format!("{}/nix-cache-info", state.upstream);
     let resp = state.client.get(&url).send().await?;
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let bytes = resp.bytes().await?;
-    Ok((status, bytes.to_vec()).into_response())
+    let bytes = read_capped(resp, MAX_CACHE_INFO_BYTES).await?;
+    Ok((status, bytes).into_response())
 }
 
 async fn handle_narinfo(
@@ -137,15 +178,21 @@ async fn handle_narinfo(
     if !resp.status().is_success() {
         return Ok((StatusCode::NOT_FOUND, "upstream narinfo not found").into_response());
     }
-    let text = resp.text().await?;
+    let bytes = read_capped(resp, MAX_NARINFO_BYTES).await?;
+    let text = String::from_utf8(bytes).context("upstream narinfo is not valid UTF-8")?;
     let mut info = NarInfo::parse(&text)?;
     let fingerprint = info.fingerprint()?;
 
     // Verify the upstream's existing signature before we vouch for it further.
-    let verified = info
-        .sigs
-        .iter()
-        .any(|s| narinfo::verify_ed25519_sig(&fingerprint, s, &state.upstream_pubkey).is_ok());
+    let verified = info.sigs.iter().any(|s| {
+        narinfo::verify_ed25519_sig(
+            &fingerprint,
+            s,
+            state.upstream_key_name.as_deref(),
+            &state.upstream_pubkey,
+        )
+        .is_ok()
+    });
     if !verified {
         return Err(AppError(anyhow!(
             "upstream Sig did not verify against the configured upstream_pubkey for {hash}"

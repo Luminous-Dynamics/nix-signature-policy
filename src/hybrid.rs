@@ -142,28 +142,45 @@ impl HybridSigner {
     }
 }
 
-/// Verify a hybrid signature. **Both** halves must verify against `message`.
-pub fn verify(keys: &HybridVerifyingKeys, message: &[u8], sig: &HybridSignature) -> Result<()> {
-    // --- Ed25519 (classical) ---
-    let ed_vk = EdVerifyingKey::from_bytes(&keys.ed25519)
+/// Verify just the Ed25519 half against `message`. Exposed separately (not
+/// just inlined into [`verify`]) so a caller checking many same-keyname
+/// candidate signatures — e.g. `keys::verify_hybrid` — can test each half
+/// independently in O(n+m) instead of trying every classical×PQC pairing in
+/// O(n×m): both halves verify against the *same* fixed `keys`/`message`
+/// regardless of which candidate is paired with which, so cross-pairing
+/// never changes the result.
+pub fn verify_ed25519_only(
+    ed25519_key: &[u8; ED25519_PUBLIC_KEY_LEN],
+    message: &[u8],
+    sig: &[u8; ED25519_SIGNATURE_LEN],
+) -> Result<()> {
+    let ed_vk = EdVerifyingKey::from_bytes(ed25519_key)
         .map_err(|e| anyhow!("invalid Ed25519 verifying key: {e}"))?;
-    let ed_sig = EdSignature::from_bytes(&sig.ed25519);
+    let ed_sig = EdSignature::from_bytes(sig);
     ed_vk
         .verify(message, &ed_sig)
-        .map_err(|e| anyhow!("Ed25519 signature verification failed: {e}"))?;
+        .map_err(|e| anyhow!("Ed25519 signature verification failed: {e}"))
+}
 
-    // --- ML-DSA-65 (post-quantum) ---
-    let ml_encoded_vk = EncodedVerifyingKey::<MlDsa65>::try_from(keys.ml_dsa.as_slice())
+/// Verify just the ML-DSA-65 half against `message`. See
+/// [`verify_ed25519_only`] for why this is exposed independently.
+pub fn verify_ml_dsa_only(ml_dsa_key: &[u8], message: &[u8], sig: &[u8]) -> Result<()> {
+    let ml_encoded_vk = EncodedVerifyingKey::<MlDsa65>::try_from(ml_dsa_key)
         .map_err(|_| anyhow!("invalid ML-DSA verifying key length"))?;
     let ml_vk = MlVerifyingKey::<MlDsa65>::decode(&ml_encoded_vk);
-    let ml_encoded_sig = EncodedSignature::<MlDsa65>::try_from(sig.ml_dsa.as_slice())
+    let ml_encoded_sig = EncodedSignature::<MlDsa65>::try_from(sig)
         .map_err(|_| anyhow!("invalid ML-DSA signature length"))?;
     let ml_sig = MlSignature::<MlDsa65>::decode(&ml_encoded_sig)
         .ok_or_else(|| anyhow!("undecodable ML-DSA signature"))?;
     ml_vk
         .verify(message, &ml_sig)
-        .map_err(|e| anyhow!("ML-DSA signature verification failed: {e}"))?;
+        .map_err(|e| anyhow!("ML-DSA signature verification failed: {e}"))
+}
 
+/// Verify a hybrid signature. **Both** halves must verify against `message`.
+pub fn verify(keys: &HybridVerifyingKeys, message: &[u8], sig: &HybridSignature) -> Result<()> {
+    verify_ed25519_only(&keys.ed25519, message, &sig.ed25519)?;
+    verify_ml_dsa_only(&keys.ml_dsa, message, &sig.ml_dsa)?;
     Ok(())
 }
 

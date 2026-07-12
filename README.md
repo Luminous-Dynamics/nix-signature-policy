@@ -18,6 +18,25 @@ Ed25519+ML-DSA-65 construction (see `src/hybrid.rs`) that is itself
 EXPERIMENTAL and has not had a crypto audit. Do not point this at anything
 you actually depend on for security.
 
+## Trust model — read this first
+
+**The proxy upgrades the signature *format*. It does not upgrade the
+upstream *root of trust*.** Its flow is: receive upstream metadata signed
+with Ed25519 → verify that Ed25519 signature → mint a new hybrid signature
+(our own Ed25519 + ML-DSA) over the same content. If an attacker can forge
+Ed25519 signatures (the exact threat a cryptographically-relevant quantum
+computer poses), they can hand the proxy forged upstream metadata; the
+proxy will happily verify that forged classical signature and then mint a
+perfectly valid ML-DSA signature over it. **The proxy is only as
+trustworthy as the classical upstream it's translating from** — it is a
+wire-format and deployment-mechanics demonstration, not a way to make a
+classically-signed cache post-quantum secure. The real post-quantum
+solution is native dual-signing at the cache that actually holds the
+signing key, which is what the RFC in `rfc/` proposes upstream. Useful
+things this prototype *does* demonstrate: backward-compatible wire format,
+deployment mechanics, and a migration bridge for caches whose origin is
+independently authenticated by some other means.
+
 ## Scope
 
 Nix's supply chain has two halves for quantum readiness: store-path hashing
@@ -48,7 +67,7 @@ assertion:**
   when only our key is configured as trusted, and correctly refuses it
   when no key is trusted (`tests/real_nix_e2e.rs`, run for real, not just
   compiled — see "End-to-end verification" below).
-- This crate builds and passes all 44 tests from a **completely
+- This crate builds and passes all 47 tests from a **completely
   independent copy with zero path dependencies** on the monorepo it was
   developed in (verified by literally copying it to `/tmp` and running
   `cargo test` there).
@@ -90,26 +109,44 @@ assertion:**
   a copy of the Ed25519 signature, which already lives in the same-keyname
   `Sig:` line. `decode_sig_pqc()` enforces the exact expected ML-DSA-65
   signature length (3309 bytes) at this codec boundary. `verify_hybrid()`
-  tries **every** same-keyname `Sig:` candidate against **every**
-  same-keyname `Sig-PQC:` candidate and succeeds if any pairing verifies —
-  matching Nix's own any-of-N-signatures trust model — and treats a
-  malformed or unrecognized-algorithm candidate as a failed candidate to
-  skip, never a hard abort that could block a different, valid pairing.
-  The leading tag byte (`SigPqcAlgorithm`, currently one variant,
-  `MlDsa65 = 1`) makes the format self-describing — a future ML-DSA-87 or
-  Falcon variant is a new enum arm, not a format rewrite.
+  requires **both** an Ed25519 `Sig:` candidate and an ML-DSA `Sig-PQC:`
+  candidate for the given keyname to independently verify against the
+  fixed keys/message — checked in O(n+m), not by trying every classical×PQC
+  pairing (an earlier O(n×m) version did this; pairing turned out to have
+  no effect on the result, since neither half's verification depends on
+  which candidate it's nominally paired with) — with a per-half candidate
+  cap plus dedup so a narinfo with many repeated same-keyname lines can't
+  force unbounded work. Matches Nix's own any-of-N-signatures trust model,
+  and treats a malformed/unrecognized-algorithm/duplicate candidate as
+  dropped during collection, never a hard abort that could block a
+  different, valid candidate. `keygen`-time names are validated
+  (`validate_key_name`: ASCII alnum + `.`/`_`/`-` only, ≤128 chars) since
+  they're embedded verbatim into `Sig:`/`Sig-PQC:` lines and output
+  filenames — an unvalidated name could inject a colon or newline into the
+  wire format. Secret/public key files are written atomically (temp file +
+  rename, refusing to clobber an existing file) with the secret file at
+  mode 0600 on unix, rather than the umask-dependent permissions of a bare
+  `fs::write`.
 - `src/proxy.rs` — an axum reverse proxy speaking the Nix HTTP binary-cache
   protocol: fetches `nix-cache-info` / `.narinfo` / `nar/*` from a configured
-  upstream, verifies the upstream's `Sig:` against a configured public key,
-  and re-serves the narinfo with an added `Sig:` (same key material, so
-  ordinary `nix` needs zero awareness of the hybrid format) plus `Sig-PQC:`.
-  `.narinfo` text is buffered (it has to be — we parse and mutate it), but
-  NAR bytes are streamed straight through (`axum::body::Body::from_stream`)
-  rather than buffered, since a real store path can be gigabytes. The HTTP
-  client has a 30s request timeout so a hung upstream can't wedge the proxy
-  indefinitely.
-- CLI: `keygen`, `sign <cache_dir>`, `verify <narinfo> [--require-pqc]`,
-  `proxy`.
+  upstream, verifies the upstream's `Sig:` against a configured public key
+  (name-enforced when `--upstream-pubkey` carries a `name:` prefix, exactly
+  like `nix.conf`'s `trusted-public-keys`; name-blind with a startup warning
+  otherwise), and re-serves the narinfo with an added `Sig:` (same key
+  material, so ordinary `nix` needs zero awareness of the hybrid format)
+  plus `Sig-PQC:`. `.narinfo`/`nix-cache-info` bodies are buffered (they
+  have to be — we parse and mutate the narinfo) but capped at 64KiB/4KiB
+  respectively while streaming, so a malicious or misbehaving upstream
+  can't force unbounded memory use before a decision is made. NAR bytes are
+  NOT capped — streamed straight through
+  (`axum::body::Body::from_stream`) rather than buffered, since a real
+  store path can be gigabytes. The HTTP client has a 30s request timeout so
+  a hung upstream can't wedge the proxy indefinitely. See "Trust model"
+  above for what this proxy does and doesn't secure.
+- CLI: `keygen`, `sign <cache_dir>`, `verify <narinfo> [--pubkey
+  name:base64] [--pqc-pubkey path] [--require-pqc]` (at least one of
+  `--pubkey`/`--pqc-pubkey` is required — verifying against neither would
+  otherwise silently report success), `proxy`.
 
 ## Real, previously-undetected bug: reference-order canonicalization
 
@@ -129,7 +166,7 @@ so it can't silently regress.
 
 ## Testing
 
-- `cargo test` — 44 tests: unit tests (`src/`, including `hybrid.rs`'s own
+- `cargo test` — 47 tests: unit tests (`src/`, including `hybrid.rs`'s own
   primitive-level suite), `tests/proxy_e2e.rs` (4 **hermetic** integration
   tests: an in-process fake upstream binary cache with its own throwaway
   Ed25519 key, real HTTP on an OS-assigned port, no network or `nix`
@@ -156,7 +193,7 @@ so it can't silently regress.
   implementation as a regression check.
 - **Fresh-clone reproducibility**, verified directly: `cp -r
   nix-pqc-cache-proxy /tmp/elsewhere && cd /tmp/elsewhere && cargo test`
-  passes all 44 tests with zero reference back to this monorepo — no path
+  passes all 47 tests with zero reference back to this monorepo — no path
   dependencies, no sibling-crate assumptions.
 
 ## Real measurements from this pass
@@ -192,7 +229,7 @@ Originally done by hand; now codified as `tests/real_nix_e2e.rs` and
 actually run (not just compiled) against the current code, including every
 fix described above — **136.26s, PASSED**:
 
-1. `cargo test` — all 44 tests pass, including a real (not fabricated)
+1. `cargo test` — all 47 tests pass, including a real (not fabricated)
    narinfo fixture verifying against the real `cache.nixos.org-1` Ed25519
    key, deliberate corruption tests for both the classical and ML-DSA
    halves, and the full test-vector suite.
