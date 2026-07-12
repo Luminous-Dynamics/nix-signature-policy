@@ -92,7 +92,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: DeterminateSystems/nix-installer-action@main
+      # Pinned to main's HEAD as of 2026-07-12 (v22 tag exists but is older
+      # than main); update the SHA deliberately, don't float on @main.
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
       # This is the actual claim the README/RFC make: a real, unmodified
       # `nix` trusts a hybrid-resigned narinfo through our real proxy, via
       # `nix store verify` (not just our own crypto self-checks). Builds

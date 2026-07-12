@@ -56,6 +56,7 @@ impl SecretKey {
             .next()
             .ok_or_else(|| anyhow!("empty secret key file"))?
             .to_string();
+        validate_key_name(&name).context("secret key file has an invalid name")?;
         let b64 = lines
             .next()
             .ok_or_else(|| anyhow!("secret key file missing key material line"))?;
@@ -103,6 +104,7 @@ impl PublicKey {
             .next()
             .ok_or_else(|| anyhow!("empty public key file"))?
             .to_string();
+        validate_key_name(&name).context("public key file has an invalid name")?;
         let ed_line = lines
             .next()
             .ok_or_else(|| anyhow!("public key file missing ed25519 line"))?;
@@ -192,6 +194,19 @@ fn write_new_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
     if path.exists() {
         bail!("refusing to overwrite existing file {path:?}");
     }
+    write_via_temp_rename(path, contents, secret)
+}
+
+/// Overwrite `path` atomically (temp file + rename): a reader never
+/// observes a partially-written file, whether `path` exists yet or not.
+/// Unlike [`write_new_atomic`], overwriting an existing file is the whole
+/// point here (e.g. re-signing an already-signed `.narinfo`), so there's no
+/// existence check.
+pub fn write_atomic_overwrite(path: &Path, contents: &str) -> Result<()> {
+    write_via_temp_rename(path, contents, false)
+}
+
+fn write_via_temp_rename(path: &Path, contents: &str, secret: bool) -> Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

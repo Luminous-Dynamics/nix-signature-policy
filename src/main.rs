@@ -133,6 +133,13 @@ fn cmd_sign(cache_dir: &Path, key_path: &Path) -> Result<()> {
         let fingerprint = info.fingerprint()?;
         let sig = secret.signer.sign(fingerprint.as_bytes());
 
+        // Re-signing an already-signed narinfo must REPLACE this key's prior
+        // entries, not accumulate duplicates alongside them -- `sign` is
+        // meant to be safely re-runnable on the same cache dir.
+        let prefix = format!("{}:", secret.name);
+        info.sigs.retain(|s| !s.starts_with(&prefix));
+        info.sig_pqc.retain(|s| !s.starts_with(&prefix));
+
         // Classical Sig:, signed with the SAME Ed25519 half — ordinary `nix`
         // stays fully backward compatible and needs no awareness of Sig-PQC.
         let ed_b64 =
@@ -141,7 +148,7 @@ fn cmd_sign(cache_dir: &Path, key_path: &Path) -> Result<()> {
         info.sig_pqc
             .push(keys::encode_sig_pqc(&secret.name, &sig.ml_dsa));
 
-        std::fs::write(&path, info.to_text())?;
+        keys::write_atomic_overwrite(&path, &info.to_text())?;
         count += 1;
     }
     println!(
