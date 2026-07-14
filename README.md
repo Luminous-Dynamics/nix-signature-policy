@@ -1,321 +1,429 @@
-# nix-pqc-cache-proxy: self-contained reference-format prototype
+# nix-signature-policy
 
-[![CI](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml)
+[![CI](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml)
 
-Not a production proxy, not a native Nix implementation, not audited
-crypto. What it is: a working, independently-buildable, test-vectored
-prototype of a hybrid Ed25519 + ML-DSA-65 signature scheme for Nix's
-`.narinfo` binary-cache format — a CLI to generate keys / dual-sign /
-verify a local binary cache, and a reverse proxy that verifies an
-upstream's classical signature and re-serves the narinfo augmented with
-the hybrid field. Real, unmodified `nix` accepts the *classical* signature
-this tool adds and ignores the added `Sig-PQC:` field entirely (see "An
-honest correction" below for exactly how that was proven, not just
-asserted).
+**A reference implementation and conformance suite for composable signature authorization in Nix.**
 
-**This is exploratory, unaudited, prototype code.** It vendors a hybrid
-Ed25519+ML-DSA-65 construction (see `src/hybrid.rs`) that is itself
-EXPERIMENTAL and has not had a crypto audit. Do not point this at anything
-you actually depend on for security.
+`nix-signature-policy` explores a narrow but important distinction:
+cryptographic verification establishes that a signature is valid, while
+**authorization policy** determines whether the available verified evidence is
+sufficient to trust a Nix store path.
 
-## Trust model — read this first
+Existing any-valid-signature behavior is useful and remains the compatibility
+default. It cannot, by itself, express requirements such as:
 
-**The proxy upgrades the signature *format*. It does not upgrade the
-upstream *root of trust*.** Its flow is: receive upstream metadata signed
-with Ed25519 → verify that Ed25519 signature → mint a new hybrid signature
-(our own Ed25519 + ML-DSA) over the same content. If an attacker can forge
-Ed25519 signatures (the exact threat a cryptographically-relevant quantum
-computer poses), they can hand the proxy forged upstream metadata; the
-proxy will happily verify that forged classical signature and then mint a
-perfectly valid ML-DSA signature over it. **The proxy is only as
-trustworthy as the classical upstream it's translating from** — it is a
-wire-format and deployment-mechanics demonstration, not a way to make a
-classically-signed cache post-quantum secure. The real post-quantum
-solution is native dual-signing at the cache that actually holds the
-signing key, which is what the RFC in `rfc/` proposes upstream. Useful
-things this prototype *does* demonstrate: backward-compatible wire format,
-deployment mechanics, and a migration bridge for caches whose origin is
-independently authenticated by some other means.
+- one classical signature **and** one post-quantum signature;
+- the same cache authority authenticated through two algorithm families;
+- independent release and security authorities;
+- thresholds over distinct signer identities;
+- diversity across cryptographic families or custody domains;
+- explicit migration, deprecation, recovery, and rollback rules.
 
-## Scope
+This repository develops a small, deterministic, transport-independent policy
+model for those cases. It includes a Rust reference evaluator, adversarial test
+vectors, trusted-key registries, persistent rollback checkpoints, enforcement
+modes, decision evidence, trust receipts, and a historical Nix binary-cache
+proxy used as an integration harness.
 
-Nix's supply chain has two halves for quantum readiness: store-path hashing
-(truncated SHA-256, still fine under Grover's algorithm) and binary-cache
-trust (Ed25519 `.narinfo` signatures, broken outright by Shor's algorithm on
-a cryptographically-relevant quantum computer). This tool addresses the
-second half — but **it does not and cannot make `cache.nixos.org` itself
-PQC-signed**: upstream doesn't sign with ML-DSA and we don't hold their key.
-What it demonstrates is the hybrid-signature mechanics and a local
-trust-translating proxy, using a format (`Sig-PQC:`) that is our own
-invention for this prototype, not a Nix or IETF spec — see `rfc/` for the
-actual proposal.
+> [!WARNING]
+> This is exploratory, unaudited research software. It is not a production
+> trust service, not an upstream Nix implementation, and not a substitute for
+> cryptographic review. Do not use it to protect systems you depend on.
 
-## What's proven, and what isn't
+## The core idea
 
-**Proven, by running real code against a real `nix` binary and real Nix
-source (`NixOS/nix` commit `ac94798c753e48fd0b36128a029ed8aecebe9b56`,
-`master`, 2026-07-08; verified 2026-07-10 — pinned since `master` moves,
-re-check against current source before relying on this), not by
-assertion:**
-- Our narinfo fingerprint construction is byte-identical to real Nix's,
-  including reference-order canonicalization (verified against
-  `src/libstore/include/nix/store/path-info.hh`'s `StorePathSet` — see
-  "Real, previously-undetected bug" below).
-- The hybrid signature construction is internally sound (round-trip,
-  tamper-rejection, wrong-signer-rejection — `src/hybrid.rs` tests).
-- A real, unmodified `nix` binary trusts a narinfo dual-signed by this tool
-  when only our key is configured as trusted, and correctly refuses it
-  when no key is trusted (`tests/real_nix_e2e.rs`, run for real, not just
-  compiled — see "End-to-end verification" below).
-- This crate builds and passes all 47 tests from a **completely
-  independent copy with zero path dependencies** on the monorepo it was
-  developed in (verified by literally copying it to `/tmp` and running
-  `cargo test` there).
+The project separates six concerns that are often conflated:
 
-**Not proven, and not claimed:**
-- That the specific `Sig-PQC:` field name or byte encoding is the one a
-  real NixOS RFC would settle on — see `rfc/`'s own "Unresolved questions."
-- That `src/hybrid.rs`'s construction is safe for any real use — it is
-  unaudited.
-- That this proxy is fit for production traffic — see "Explicitly out of
-  scope" below for what was deliberately left undone.
-- Storage/bandwidth cost at real `cache.nixos.org` scale — only a
-  single-narinfo measurement exists here (see below).
+1. **Signature transport** — how candidate signatures are represented.
+2. **Cryptographic verification** — whether each candidate verifies.
+3. **Trusted metadata** — which identity, role, authority, family, and scope a
+   key represents.
+4. **Authorization policy** — which combinations of verified evidence are
+   sufficient.
+5. **Enforcement** — whether legacy or policy evaluation owns the final
+   admission decision.
+6. **Evidence and state** — how decisions, policy epochs, registry epochs, and
+   rollback commitments are recorded.
 
-## What's here
+The policy core does not require a PQC-specific narinfo field. Ed25519 plus
+ML-DSA is a motivating profile, not a permanent architectural special case.
+The same evaluator can consume semantic observations, ordinary
+algorithm-tagged signatures, the repository's historical `Sig-PQC:` adapter,
+or a future authoritative Nix verification interface.
 
-- `src/lib.rs` — library crate (`hybrid`/`narinfo`/`keys`/`proxy` modules)
-  so integration tests and the criterion bench can exercise the logic
-  directly; `src/main.rs` is a thin CLI wrapper over it.
-- `src/hybrid.rs` — the hybrid Ed25519+ML-DSA-65 primitive: keygen, sign,
-  verify, persistence. Vendored (not path-dependency'd) from this
-  monorepo's `mycelix-crypto::hybrid_sig` — same author, same
-  AGPL-3.0-or-later license — specifically so this crate has **zero
-  private-monorepo path dependencies** and builds from a fresh clone.
-  `mycelix-crypto` belongs to a separate, larger PQC roadmap with its own
-  audit/publish timeline; vendoring keeps that roadmap independent of this
-  prototype's needs and puts the entire construction this RFC relies on in
-  one directly-auditable ~250-line file.
-- `src/narinfo.rs` — hand-rolled `.narinfo` parser/serializer + the Nix v1
-  signing fingerprint (`1;<path>;<narhash>;<narsize>;<refs>`). Verified
-  bit-compatible with real Nix: a frozen fixture (a real narinfo fetched from
-  `cache.nixos.org` for `bash-5.2p37`) round-trips through parse → fingerprint
-  → **Ed25519 verify against the real `cache.nixos.org-1` public key**, and
-  that verification actually passes. References are sorted before
-  fingerprinting, matching real Nix's `StorePathSet` (`std::set`) semantics
-  — see "Real, previously-undetected bug" below.
-- `src/keys.rs` — hybrid key generation/storage, and the `Sig-PQC:` wire
-  encoding: `name:base64(alg_tag(1B) || ml_dsa_sig)` — deliberately **not**
-  a copy of the Ed25519 signature, which already lives in the same-keyname
-  `Sig:` line. `decode_sig_pqc()` enforces the exact expected ML-DSA-65
-  signature length (3309 bytes) at this codec boundary. `verify_hybrid()`
-  requires **both** an Ed25519 `Sig:` candidate and an ML-DSA `Sig-PQC:`
-  candidate for the given keyname to independently verify against the
-  fixed keys/message — checked in O(n+m), not by trying every classical×PQC
-  pairing (an earlier O(n×m) version did this; pairing turned out to have
-  no effect on the result, since neither half's verification depends on
-  which candidate it's nominally paired with) — with a per-half candidate
-  cap plus dedup so a narinfo with many repeated same-keyname lines can't
-  force unbounded work. Matches Nix's own any-of-N-signatures trust model,
-  and treats a malformed/unrecognized-algorithm/duplicate candidate as
-  dropped during collection, never a hard abort that could block a
-  different, valid candidate. `keygen`-time names are validated
-  (`validate_key_name`: ASCII alnum + `.`/`_`/`-` only, ≤128 chars) since
-  they're embedded verbatim into `Sig:`/`Sig-PQC:` lines and output
-  filenames — an unvalidated name could inject a colon or newline into the
-  wire format. Secret/public key files are written atomically (temp file +
-  rename, refusing to clobber an existing file) with the secret file at
-  mode 0600 on unix, rather than the umask-dependent permissions of a bare
-  `fs::write`.
-- `src/proxy.rs` — an axum reverse proxy speaking the Nix HTTP binary-cache
-  protocol: fetches `nix-cache-info` / `.narinfo` / `nar/*` from a configured
-  upstream, verifies the upstream's `Sig:` against a configured public key
-  (name-enforced when `--upstream-pubkey` carries a `name:` prefix, exactly
-  like `nix.conf`'s `trusted-public-keys`; name-blind with a startup warning
-  otherwise), and re-serves the narinfo with an added `Sig:` (same key
-  material, so ordinary `nix` needs zero awareness of the hybrid format)
-  plus `Sig-PQC:`. `.narinfo`/`nix-cache-info` bodies are buffered (they
-  have to be — we parse and mutate the narinfo) but capped at 64KiB/4KiB
-  respectively while streaming, so a malicious or misbehaving upstream
-  can't force unbounded memory use before a decision is made. NAR bytes are
-  NOT capped — streamed straight through
-  (`axum::body::Body::from_stream`) rather than buffered, since a real
-  store path can be gigabytes. The HTTP client has a 30s request timeout so
-  a hung upstream can't wedge the proxy indefinitely. See "Trust model"
-  above for what this proxy does and doesn't secure.
-- CLI: `keygen`, `sign <cache_dir>`, `verify <narinfo> [--pubkey
-  name:base64] [--pqc-pubkey path] [--require-pqc]` (at least one of
-  `--pubkey`/`--pqc-pubkey` is required — verifying against neither would
-  otherwise silently report success), `proxy`.
+## What the framework can express
 
-## Real, previously-undetected bug: reference-order canonicalization
+### Typed signer groups
 
-Real Nix stores narinfo `references` in a `StorePathSet`
-(`std::set<StorePath>`, ordered by `StorePath`'s default lexicographic
-comparison on the basename — verified directly against
-`src/libstore/include/nix/store/path-info.hh`, whose doc comment on
-`fingerprint()` literally says "the sorted references"). It never trusts
-the narinfo text's original order. This prototype's first several passes
-stored references as a plain `Vec` and joined them in whatever order the
-text had — silently correct in every test so far only because every real
-narinfo used as a fixture happened to already be canonically sorted (since
-real Nix always emits them that way). `fingerprint()` now sorts references
-before joining; `narinfo::tests::fingerprint_is_invariant_to_reference_order_in_text`
-and `test-vectors/fingerprint-003-shuffled-references.json` pin this down
-so it can't silently regress.
+Groups are policy-defined predicates over trusted metadata, rather than labels
+self-declared by keys or signatures. Predicates can constrain:
 
-## Testing
+- algorithm identifiers;
+- cryptographic families;
+- assurance classes;
+- signer roles;
+- logical identities;
+- administrative authorities;
+- custody or failure domains.
 
-- `cargo test` — 47 tests: unit tests (`src/`, including `hybrid.rs`'s own
-  primitive-level suite), `tests/proxy_e2e.rs` (4 **hermetic** integration
-  tests: an in-process fake upstream binary cache with its own throwaway
-  Ed25519 key, real HTTP on an OS-assigned port, no network or `nix`
-  binary required — narinfo augmentation, fail-closed on an unverifiable
-  upstream signature, byte-exact 5MB NAR streaming, `nix-cache-info`
-  passthrough), and `tests/test_vectors.rs` (13 tests consuming
-  `test-vectors/*.json`). Fast (a couple seconds) and safe to run
-  anywhere, including CI, including a machine with no access to this
-  monorepo at all.
-- `tests/real_nix_e2e.rs` — the full real-`nix` proof (see next section),
-  `#[ignore]`d since it needs `nix`, network, and `python3`. Run explicitly:
-  `cargo test --test real_nix_e2e -- --ignored --nocapture`.
-- `cargo bench` — `benches/pqc_bench.rs`, timing keygen/sign/verify/encode
-  and narinfo parse/serialize against a real captured narinfo fixture.
-- `test-vectors/*.json` (generated by `cargo run --example
-  generate_test_vectors`) — 3 fingerprint vectors (including a
-  shuffled-reference-order case) and 8 signature vectors (valid; corrupted
-  ML-DSA; unknown algorithm tag; missing classical pairing; duplicate
-  invalid-first/valid-second Sig: and Sig-PQC: entries; malformed base64;
-  wrong-length ML-DSA signature; unknown-tag-then-valid-tag candidates),
-  each with a pinned expected result — so an independent implementation of
-  the wire format can check itself without reading this crate's source.
-  `tests/test_vectors.rs` runs them against this crate's own
-  implementation as a regression check.
-- **Fresh-clone reproducibility**, verified directly: `cp -r
-  nix-pqc-cache-proxy /tmp/elsewhere && cd /tmp/elsewhere && cargo test`
-  passes all 47 tests with zero reference back to this monorepo — no path
-  dependencies, no sibling-crate assumptions.
+This prevents, for example, a classical key from satisfying a post-quantum
+group merely because it was assigned an unsafe label.
 
-## Real measurements from this pass
+### Thresholds and relationships
 
-- **Signature overhead**: measured directly on a real narinfo
-  (`bash-5.2p37`) — the `Sig-PQC:` line alone is **~4.4KB** (ML-DSA-65's
-  3309-byte signature, base64-inflated ~4/3×, plus a 1-byte tag and the
-  field/keyname prefix). An earlier draft duplicated the Ed25519 signature
-  inside `Sig-PQC:` too (~4.6KB); removed once no one could justify the
-  extra ~88 base64 characters per entry — see the RFC's "Wire format"
-  section. This is a single-narinfo measurement; a real projection at
-  `cache.nixos.org`'s actual scale would need access this prototype
-  doesn't have (flagged as an open question in the RFC).
-- **Sign/verify speed** — real numbers from `cargo bench`
-  (`benches/pqc_bench.rs`, this machine, debug build):
+Clauses can require minimum counts over distinct identities, families,
+authorities, and custody domains. Bounded relational constraints can require:
 
-  | Operation | Time |
-  |---|---|
-  | `hybrid_keygen` | ~649 µs |
-  | `hybrid_sign_fingerprint` | ~1.04 ms |
-  | `hybrid_verify` | ~523 µs |
-  | `sig_pqc_encode` (base64 + tag) | ~5.76 µs |
-  | `narinfo_parse` | ~971 ns |
-  | `narinfo_to_text` | ~3.31 µs |
+- the **same identity** across multiple groups;
+- **different identities** across groups;
+- independent administrative authorities;
+- distinct cryptographic families;
+- distinct custody domains.
 
-  ML-DSA-65 sign/verify dominate, as expected — both are still
-  sub-millisecond, so at CLI/HTTP granularity this is negligible next to
-  network I/O.
+This distinguishes same-owner hybrid authentication from independent
+multi-party approval.
 
-## End-to-end verification actually performed
+### Algorithm and family lifecycle
 
-Originally done by hand; now codified as `tests/real_nix_e2e.rs` and
-actually run (not just compiled) against the current code, including every
-fix described above — **136.26s, PASSED**:
+Policy-owned algorithm metadata maps each algorithm to a family and assurance
+class. Families can be:
 
-1. `cargo test` — all 47 tests pass, including a real (not fabricated)
-   narinfo fixture verifying against the real `cache.nixos.org-1` Ed25519
-   key, deliberate corruption tests for both the classical and ML-DSA
-   halves, and the full test-vector suite.
-2. Built `nixpkgs#hello` for real, `nix copy`'d its closure (5 store paths)
-   to a local `file://` binary cache.
-3. `keygen` a hybrid key; `sign` the local cache — all 5 narinfo files
-   gained a `Sig:` (our key) and `Sig-PQC:` line; `verify --require-pqc`
-   passed; a deliberately-corrupted `Sig-PQC` byte was correctly rejected.
-4. Served that cache over plain HTTP; ran `proxy` in front of it. Fetching
-   `/<hash>.narinfo` through the proxy returned the upstream's original
-   `Sig:` **plus** our added `Sig:`/`Sig-PQC:` — after the proxy verified the
-   upstream's signature first (a deliberately-wrong `--upstream-pubkey`
-   causes every narinfo fetch to fail closed).
-5. A real, unmodified `nix copy --from http://127.0.0.1:8998 ...` pulled the
-   full closure through the proxy successfully.
+- enabled;
+- observe-only;
+- deprecated;
+- forbidden.
 
-## An honest correction found during testing
+If a cryptographic family is broken, a successor policy can forbid that family
+and activate a recovery clause using an unaffected family without changing the
+signature transport.
 
-Step 5 above is **not**, by itself, proof that `nix` verified any signature —
-this was an actual, non-obvious discovery while building the demo: `nix copy`
-between two arbitrary stores (a real substituter → a local `file://`
-directory you own) does **not** enforce `.narinfo` signature checks in
-practice, regardless of `--option trusted-public-keys`. That check matters
-for the *destination* protecting itself from an untrusted writer; an ad hoc
-`file://` directory you already have write access to isn't a protected
-destination, so there's nothing to enforce.
+### Migration and rollback protection
 
-The rigorous test is **`nix store verify`**, which directly exercises Nix's
-own trust logic against an existing store:
+Policies and trusted-key registries are separate versioned trust domains. Each
+has:
 
-```console
-$ nix store verify --store file:///tmp/pqc-demo-dest3 \
-    --option trusted-public-keys 'demo-1:1K2jCetCe2XrIXvUX9xo+W/t2FhZscU2HEKUZgErh1Q=' \
-    /nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-hello-2.12.3
-checking '/nix/store/...-hello-2.12.3'...
-$ echo $?
-0
+- a stable identifier;
+- a monotonic epoch;
+- a canonical hash;
+- a predecessor hash.
 
-$ nix store verify --store file:///tmp/pqc-demo-dest3 \
-    --option trusted-public-keys '' \
-    /nix/store/nm7p8wxflggcwxfzayhysq4z6a1wg373-hello-2.12.3
-checking '/nix/store/...-hello-2.12.3'...
-path '/nix/store/...-hello-2.12.3' is untrusted
+Local trust-state checkpoints remember the highest accepted epochs. This lets a
+client reject replay of an older policy that restores a revoked key, broken
+algorithm, expired migration fallback, or weaker authorization rule.
+
+### Explicit enforcement modes
+
+The integration contract defines four modes:
+
+- **legacy** — existing built-in admission behavior;
+- **supplemental** — either the built-in path or policy may accept;
+- **authoritative** — policy owns the final decision;
+- **conjunctive** — both the built-in path and policy must accept.
+
+The distinction is security-critical. A mandatory composed policy cannot be
+enforced if a permissive legacy path remains an unconditional bypass.
+
+### Explainable decisions
+
+Accepted decisions identify the satisfied clause and qualifying witnesses.
+Refusals use stable reason codes. Optional trust receipts can commit:
+
+- the artifact fingerprint;
+- enforcement mode;
+- policy ID, hash, and epoch;
+- trusted-key registry ID, hash, and epoch;
+- qualifying identities, families, authorities, and custody domains;
+- the selected clause and decision reason codes.
+
+This provides a basis for answering: **Why did this machine trust this store
+path?**
+
+## Example policies
+
+### Bound classical and post-quantum authorization
+
+Require one classical group and one post-quantum group, with the same logical
+cache identity represented in both.
+
+- Ed25519 from cache authority A + ML-DSA from A: accepted.
+- Ed25519 from A + ML-DSA from B: refused.
+- Ed25519 alone: refused after enforcement begins.
+
+### Independent release and security approval
+
+Require one release signer and one independently administered security signer.
+Two keys controlled by the same authority cannot satisfy both roles.
+
+### Family-diverse post-quantum authorization
+
+Require two distinct post-quantum families. Two lattice algorithms do not
+satisfy the rule; a lattice signature and a hash-based signature can.
+
+### Emergency family recovery
+
+After a lattice-family break, advance to a successor policy that marks lattice
+algorithms forbidden and requires an enabled classical-plus-hash-based profile.
+Clients that committed the new epoch reject replay of the previous policy.
+
+## Repository status
+
+The repository currently includes:
+
+- a representation-neutral Rust authorization evaluator;
+- typed policy schema v2;
+- 32 committed adversarial and adapter-parity vectors;
+- a hashed cross-implementation conformance manifest;
+- a mandatory `core-v1` interoperability profile;
+- versioned trusted-key registries;
+- policy and registry rollback checks;
+- persistent local trust-state checkpoints;
+- legacy, supplemental, authoritative, and conjunctive admission modes;
+- deterministic decision-evidence bundles;
+- compact trust-admission receipts;
+- property tests and five fuzz targets;
+- a locked Nix development and validation environment;
+- stable and latest real-Nix integration lanes;
+- a historical Ed25519 + ML-DSA binary-cache proxy demonstration.
+
+The upstream-oriented proposal is:
+
+- [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md)
+
+The original PQC transport proposal is retained only as historical context:
+
+- [`rfc/README.md`](rfc/README.md)
+
+## Quick start
+
+The preferred workflow uses the locked Nix flake:
+
+```sh
+nix develop
+nix flake check --print-build-logs
+nix run .#policy-conformance -- --format pretty
 ```
 
-Trusting **only** our proxy's hybrid-signing key is sufficient for real,
-unmodified `nix` to consider the path trusted; trusting no key at all is
-correctly refused. This is the actual proof that the classical half of our
-hybrid format is fully backward compatible: real `nix` accepts the added
-classical `Sig:` line we produce and simply never looks at `Sig-PQC:` at
-all — it does not "accept the hybrid signature" in any sense beyond that.
+Run the evidence-producing demonstration:
 
-## Explicitly out of scope
+```sh
+nix run .#demo -- --out-dir demo-output
+```
 
-- No changes to the real Nix daemon/client source, no liboqs FFI, no attempt
-  to make `cache.nixos.org` itself PQC-signed.
-- HTTP hygiene beyond a request timeout: upstream status codes other than
-  success are currently all mapped to a generic 404, and there's no
-  header/cache-control passthrough. Deferred as proxy polish that doesn't
-  bear on the RFC's trust argument — see the RFC discussion for why request
-  timeouts were prioritized and the rest wasn't.
-- Production key management, rotation, or multi-algorithm PQC support in
-  the proxy itself (the wire format's tag byte anticipates it; the proxy
-  doesn't implement it).
+Run the policy conformance harness directly with Cargo:
 
-## RFC
+```sh
+cargo run --locked --bin policy-conformance -- \
+  --vectors policy-vectors \
+  --format pretty
+```
 
-`rfc/0000-hybrid-binary-cache-signatures.md` — a draft NixOS RFC proposing
-this hybrid `Sig-PQC:` scheme upstream, following the real `NixOS/rfcs`
-template. Points at this prototype as supporting evidence and cites exact
-file/function names in real `NixOS/nix` source (verified against the
-GitHub repo, not reconstructed from memory) for where a real implementation
-would land: `ValidPathInfo::fingerprint()`/`checkSignatures()`
-(`src/libstore/path-info.cc`), the `Signer` interface
-(`src/libutil/signature/signer.hh`), and `LocalStore::pathInfoIsUntrusted()`
-(`src/libstore/local-store.cc`).
+Inspect the trust-state and receipt tools:
+
+```sh
+cargo run --locked --bin trust-state -- --help
+cargo run --locked --bin trust-receipt -- --help
+cargo run --locked --bin policy-evidence -- --help
+```
+
+Run the real-Nix integration lanes separately from the hermetic test suite:
+
+```sh
+nix run .#real-nix-e2e-stable
+nix run .#real-nix-e2e-latest
+```
+
+## Recommended review path
+
+For a focused review, read these documents in order:
+
+1. [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md)
+2. [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)
+3. [`docs/TYPED_POLICY_CORE.md`](docs/TYPED_POLICY_CORE.md)
+4. [`docs/POLICY_LIFECYCLE_AND_RECOVERY.md`](docs/POLICY_LIFECYCLE_AND_RECOVERY.md)
+5. [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md)
+6. [`docs/TRUST_REGISTRIES.md`](docs/TRUST_REGISTRIES.md)
+7. [`docs/LOCAL_TRUST_STATE.md`](docs/LOCAL_TRUST_STATE.md)
+8. [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md)
+
+The shorter maintainer-oriented guide is:
+
+- [`docs/MAINTAINER_REVIEW.md`](docs/MAINTAINER_REVIEW.md)
+
+## Conformance suite
+
+`policy-vectors/` contains representation-neutral semantic and transport-adapter
+cases. The suite covers, among other properties:
+
+- classical-only and PQ-only downgrade attempts;
+- invalid, unknown, revoked, expired, and not-yet-valid keys;
+- duplicate amplification and contradictory duplicate evidence;
+- raw-observation and unique-candidate bounds;
+- typed-group classification;
+- same-identity and independent-authority relationships;
+- cryptographic-family diversity;
+- observe-only, deprecated, and forbidden family states;
+- migration-clause expiry;
+- policy and registry rollback;
+- recovery after a family is prohibited;
+- parity across semantic, algorithm-tagged, and historical `Sig-PQC:` adapters.
+
+The conformance manifest binds every vector by SHA-256 and defines the portable
+`core-v1` profile. Implementations can use the same corpus without adopting this
+repository's Rust code, proxy, or configuration syntax.
+
+```sh
+nix run .#policy-conformance -- --format json > policy-report.json
+```
+
+## Architecture
+
+Key modules include:
+
+- `src/policy.rs` — bounded typed-group evaluator and lifecycle semantics;
+- `src/policy_adapters.rs` — representation adapters;
+- `src/conformance.rs` — deterministic vector execution;
+- `src/registry.rs` — versioned trusted-key registries;
+- `src/state.rs` — persistent rollback checkpoints;
+- `src/integration.rs` — Nix admission and enforcement contract;
+- `src/evidence.rs` — deterministic policy-decision evidence;
+- `src/receipt.rs` — compact trust-admission receipts;
+- `src/narinfo.rs` — Nix narinfo parsing and canonical fingerprinting;
+- `src/proxy.rs` — historical binary-cache integration harness;
+- `src/hybrid.rs` — unaudited Ed25519 + ML-DSA demonstration primitive.
+
+Important data and specification directories:
+
+- `policy-vectors/` — adversarial authorization cases;
+- `conformance/` — portable manifest and schema;
+- `trust-state/` — local checkpoint examples and schema;
+- `receipts/` — receipt examples and schema;
+- `evidence/` — decision-evidence examples and schema;
+- `rfc/` — current and historical RFC drafts;
+- `docs/` — normative model, threat model, integration contract, and review
+  material.
+
+## Historical PQC proxy
+
+The package and legacy executable are still named `nix-pqc-cache-proxy` for
+compatibility with the original research prototype. They demonstrate:
+
+- ordinary Ed25519 cache signatures;
+- an experimental parallel `Sig-PQC:` field carrying ML-DSA evidence;
+- bounded reverse-proxy operation;
+- local cache signing and verification;
+- interaction with an unmodified Nix client.
+
+`Sig-PQC:` is **not** proposed as the preferred upstream representation. The
+policy architecture intentionally works with ordinary algorithm-tagged
+signatures and future authoritative verification interfaces.
+
+Most importantly, a translating proxy does **not** upgrade the upstream root of
+trust. If the origin metadata is authenticated only by Ed25519, the proxy still
+depends on that classical signature before minting new local evidence. A real
+post-quantum root of trust requires the origin authority itself to sign using an
+appropriate post-quantum key.
+
+## Security boundaries and non-goals
+
+This project does not claim to:
+
+- make compromised builders trustworthy;
+- prove that a build is reproducible;
+- secure signing hosts or hardware;
+- choose cryptographically safe algorithms for operators;
+- make a classically authenticated origin post-quantum secure;
+- provide audited production cryptography;
+- define the final upstream Nix configuration syntax;
+- replace transparency logs, provenance systems, or revocation services.
+
+The reference evaluator is intentionally small and non-Turing-complete. It uses
+bounded candidate sets, deterministic canonicalization, distinct-identity
+counting, and stable diagnostics so independent implementations can agree on a
+decision.
+
+Read [`SECURITY.md`](SECURITY.md) and
+[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) before evaluating deployment
+ideas.
+
+## Prior art and upstream relationship
+
+This project does not claim first implementation of post-quantum signatures for
+Nix.
+
+Relevant work includes:
+
+- Determinate's native ML-DSA signing work;
+- upstream Nix polymorphic key-type work;
+- discussion of configurable external signature verification;
+- existing Nix any-valid trusted-key behavior.
+
+The distinct question studied here is **authorization composition**: how Nix
+can require particular combinations of already verified evidence without
+embedding one algorithm era into the transport format.
+
+See [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md) and
+[`docs/adr/0001-policy-over-transport.md`](docs/adr/0001-policy-over-transport.md).
+
+## Validation
+
+The intended reproducible gate is:
+
+```sh
+nix flake check --print-build-logs
+```
+
+It covers the package build, formatting, Clippy, unit and integration tests,
+JSON Schema checks, policy conformance, examples, benches, and rustdoc under the
+locked toolchain.
+
+Additional commands:
+
+```sh
+cargo test --locked
+cargo check --locked --benches --examples
+nix run .#fuzz-smoke
+nix run .#audit
+nix run .#environment > environment.json
+```
+
+The real-Nix lanes are intentionally separate because they start local services
+and execute Nix store operations.
+
+## Design principles
+
+The project aims to remain:
+
+- **transport-independent** — policy is not tied to `Sig-PQC:` or one wire
+  format;
+- **algorithm-agile** — algorithms and families are policy-owned metadata;
+- **fail-closed** — unsupported required evidence and contradictory outcomes do
+  not silently weaken policy;
+- **bounded** — no unrestricted policy language or unbounded candidate work;
+- **deterministic** — input ordering and duplicate entries do not change
+  authorization;
+- **explainable** — every acceptance names its rule and witnesses;
+- **recoverable** — policy control need not depend on the family being removed;
+- **interoperable** — shared vectors define semantics independently of this
+  implementation;
+- **compatible** — existing Nix behavior remains available as an explicit
+  legacy mode.
+
+## Contributing
+
+The most useful contributions are:
+
+- review of the normative authorization semantics;
+- adversarial or ambiguous conformance cases;
+- independent evaluator implementations;
+- cppnix or tvix integration experiments;
+- rollback and recovery analysis;
+- cryptographic-family classification review;
+- boundedness and denial-of-service analysis;
+- documentation that narrows claims or exposes unsafe assumptions.
+
+A negative result that rules out an unsafe design is considered a successful
+contribution.
 
 ## License
 
-The crate (`src/`, `tests/`, `benches/`, `examples/`) is
-AGPL-3.0-or-later, per `Cargo.toml` and `LICENSE` — deliberate, since this
-is network-facing server software (the `proxy` subcommand) and
-modifications served over a network should stay open per the AGPL's intent.
-
-`test-vectors/*.json` is CC0-1.0 (`test-vectors/LICENSE`) instead: those
-exist specifically so an independent implementation (`tvix`, Cachix,
-Attic, ...) can copy them wholesale into its own test suite without
-inheriting a copyleft obligation on its own code. Copyleft-licensing pure
-interop test data would work against the one thing that directory is for.
+AGPL-3.0-or-later. See [`LICENSE`](LICENSE).
