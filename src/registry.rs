@@ -8,7 +8,8 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::commitment::{CommitmentDomain, commitment_sha256};
 
 use crate::policy::TrustedKey;
 
@@ -86,7 +87,7 @@ pub fn canonical_registry_sha256(registry: &TrustRegistry) -> Result<String, ser
     let mut canonical = registry.clone();
     canonicalize_trust_registry(&mut canonical);
     let bytes = serde_json::to_vec(&canonical)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(commitment_sha256(CommitmentDomain::Registry, &bytes))
 }
 
 /// Validate registry structure and committed minimum epoch.

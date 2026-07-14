@@ -9,8 +9,8 @@ use std::path::Path;
 use base64::Engine;
 use serde_json::Value;
 
-use nix_pqc_cache_proxy::keys::{self, verify_hybrid};
-use nix_pqc_cache_proxy::narinfo::NarInfo;
+use nix_signature_policy::keys::{self, verify_hybrid};
+use nix_signature_policy::narinfo::NarInfo;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
@@ -124,7 +124,7 @@ fn run_signature_vector(name: &str) {
     let ml_dsa = B64
         .decode(vector["ml_dsa_65_public_key_b64"].as_str().unwrap())
         .unwrap();
-    let keys = nix_pqc_cache_proxy::hybrid::HybridVerifyingKeys { ed25519, ml_dsa };
+    let keys = nix_signature_policy::hybrid::HybridVerifyingKeys { ed25519, ml_dsa };
 
     let mut info = info;
     info.sigs = strip_prefix_all(&vector["sig_lines"], "Sig: ");

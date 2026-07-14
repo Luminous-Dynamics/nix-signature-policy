@@ -1,0 +1,15 @@
+{
+  "profile_id": "resource-v1",
+  "profile_version": 1,
+  "max_policy_families": 64,
+  "max_policy_algorithms": 256,
+  "max_policy_groups": 128,
+  "max_policy_clauses": 128,
+  "max_requirements_per_clause": 64,
+  "max_relations_per_clause": 64,
+  "max_groups_per_relation": 16,
+  "max_trusted_keys": 4096,
+  "max_roles_per_key": 64,
+  "max_predicate_values": 256,
+  "max_identifier_bytes": 256
+}

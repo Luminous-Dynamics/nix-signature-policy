@@ -557,6 +557,10 @@
         "policy_epoch": {
           "type": "integer",
           "minimum": 1
+        },
+        "omitted_candidate_diagnostics": {
+          "type": "integer",
+          "minimum": 0
         }
       },
       "additionalProperties": false

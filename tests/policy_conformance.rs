@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use nix_pqc_cache_proxy::conformance::{assert_equivalent_decisions, load_case, run_directory};
-use nix_pqc_cache_proxy::policy::evaluate_policy;
+use nix_signature_policy::conformance::{assert_equivalent_decisions, load_case, run_directory};
+use nix_signature_policy::policy::evaluate_policy;
 
 #[test]
 fn committed_policy_vectors_all_pass() {

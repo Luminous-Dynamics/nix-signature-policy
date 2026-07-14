@@ -1,11 +1,11 @@
 {
   "bundle_schema_version": 1,
-  "payload_sha256": "8c81a1a5f4549da7da165d66f889d482f31103eafd185bc0ac156f61b2b86f60",
+  "payload_sha256": "e535dcfe8d888948be499bba54052ce6dbd1efdd6caabcd490b7b37207b2a82e",
   "payload": {
     "schema_version": 1,
     "assurance": "policy_replay",
     "producer": {
-      "implementation": "nix-pqc-cache-proxy",
+      "implementation": "nix-signature-policy",
       "version": "0.1.0"
     },
     "source": {
@@ -240,7 +240,8 @@
             }
           ]
         }
-      ]
+      ],
+      "omitted_candidate_diagnostics": 0
     }
   },
   "attestation": null

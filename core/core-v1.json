@@ -1,0 +1,11 @@
+{
+  "profile_id": "core-v1",
+  "profile_version": 1,
+  "normative_spec_revision": 1,
+  "policy_vector_schema_version": 2,
+  "integration_contract_version": 2,
+  "commitment_format_version": 1,
+  "max_configurable_signature_observations": 16384,
+  "max_configurable_signature_candidates": 4096,
+  "max_candidate_diagnostics": 256
+}

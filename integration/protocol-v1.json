@@ -1,0 +1,17 @@
+{
+  "protocol_id": "nix-signature-authorization-json-v1",
+  "protocol_version": 1,
+  "integration_contract_version": 2,
+  "framing": "one-json-document",
+  "request_source": "stdin-or-file",
+  "response_destination": "stdout",
+  "max_request_bytes": 1048576,
+  "max_response_bytes": 2097152,
+  "exit_codes": {
+    "0": "authorization accepted",
+    "10": "authorization refused",
+    "64": "request or protocol error",
+    "70": "response serialization or bound failure",
+    "74": "output write failure"
+  }
+}

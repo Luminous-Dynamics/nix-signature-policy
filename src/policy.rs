@@ -9,11 +9,12 @@
 //! registry, not from key-controlled group labels. This prevents a trusted key
 //! record from silently declaring a classical algorithm to be post-quantum.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::commitment::{CommitmentDomain, commitment_sha256};
+use crate::limits::policy_within_resource_limits;
 
 /// Current machine-readable conformance schema version.
 pub const POLICY_VECTOR_SCHEMA_VERSION: u32 = 2;
@@ -25,6 +26,8 @@ pub const DEFAULT_MAX_SIGNATURE_CANDIDATES: usize = 32;
 pub const MAX_CONFIGURABLE_SIGNATURE_OBSERVATIONS: usize = 16_384;
 /// Defensive upper bound for a vector-supplied unique candidate cap.
 pub const MAX_CONFIGURABLE_SIGNATURE_CANDIDATES: usize = 4096;
+/// Maximum number of candidate-level diagnostics retained in one decision.
+pub const MAX_CANDIDATE_DIAGNOSTICS: usize = 256;
 
 fn default_max_signature_observations() -> usize {
     DEFAULT_MAX_SIGNATURE_OBSERVATIONS
@@ -444,6 +447,9 @@ pub struct PolicyDecision {
     pub reason_codes: BTreeSet<ReasonCode>,
     pub candidate_diagnostics: Vec<CandidateDiagnostic>,
     pub clause_evaluations: Vec<ClauseEvaluation>,
+    /// Number of additional candidate diagnostics suppressed by the hard cap.
+    #[serde(default)]
+    pub omitted_candidate_diagnostics: usize,
 }
 
 impl PolicyDecision {
@@ -459,6 +465,7 @@ impl PolicyDecision {
             eligible_candidate_count: 0,
             reason_codes: BTreeSet::from([code]),
             candidate_diagnostics: Vec::new(),
+            omitted_candidate_diagnostics: 0,
             clause_evaluations: Vec::new(),
         }
     }
@@ -526,9 +533,11 @@ pub fn evaluate_policy_with_context(
     }
 
     let mut diagnostics = Vec::new();
+    let mut omitted_candidate_diagnostics = 0;
     let mut reason_codes = BTreeSet::new();
     let mut unique_candidates = BTreeMap::new();
     let mut has_conflict = false;
+    let mut seen_verifications: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
 
     for candidate in candidates {
         let identity = (
@@ -536,26 +545,28 @@ pub fn evaluate_policy_with_context(
             candidate.algorithm.clone(),
             candidate.signature_id.clone(),
         );
-        match unique_candidates.entry(identity) {
-            Entry::Vacant(entry) => {
-                entry.insert(candidate.verification);
-            }
-            Entry::Occupied(entry) if *entry.get() == candidate.verification => {
-                reason_codes.insert(ReasonCode::DuplicateCandidate);
-                diagnostics.push(candidate_diagnostic(
-                    candidate,
-                    ReasonCode::DuplicateCandidate,
-                ));
-            }
-            Entry::Occupied(_) => {
-                has_conflict = true;
-                reason_codes.insert(ReasonCode::ConflictingCandidate);
-                diagnostics.push(candidate_diagnostic(
-                    candidate,
-                    ReasonCode::ConflictingCandidate,
-                ));
-            }
+        let seen = seen_verifications.entry(identity.clone()).or_default();
+        if seen.contains(&candidate.verification) {
+            reason_codes.insert(ReasonCode::DuplicateCandidate);
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                candidate,
+                ReasonCode::DuplicateCandidate,
+            );
         }
+        if seen.iter().any(|v| *v != candidate.verification) {
+            has_conflict = true;
+            reason_codes.insert(ReasonCode::ConflictingCandidate);
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                candidate,
+                ReasonCode::ConflictingCandidate,
+            );
+        }
+        seen.insert(candidate.verification);
+        unique_candidates.insert(identity, candidate.verification);
     }
 
     if has_conflict {
@@ -571,6 +582,7 @@ pub fn evaluate_policy_with_context(
             eligible_candidate_count: 0,
             reason_codes,
             candidate_diagnostics: diagnostics,
+            omitted_candidate_diagnostics,
             clause_evaluations: Vec::new(),
         };
     }
@@ -589,6 +601,7 @@ pub fn evaluate_policy_with_context(
             eligible_candidate_count: 0,
             reason_codes,
             candidate_diagnostics: diagnostics,
+            omitted_candidate_diagnostics,
             clause_evaluations: Vec::new(),
         };
     }
@@ -629,13 +642,23 @@ pub fn evaluate_policy_with_context(
         };
         if let Some(code) = verification_code {
             reason_codes.insert(code);
-            diagnostics.push(candidate_diagnostic(&candidate, code));
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                &candidate,
+                code,
+            );
             continue;
         }
 
         let Some(named_keys) = keys_by_name.get(candidate.key_name.as_str()) else {
             reason_codes.insert(ReasonCode::UnknownKey);
-            diagnostics.push(candidate_diagnostic(&candidate, ReasonCode::UnknownKey));
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                &candidate,
+                ReasonCode::UnknownKey,
+            );
             continue;
         };
 
@@ -645,10 +668,12 @@ pub fn evaluate_policy_with_context(
             .find(|key| key.algorithm == candidate.algorithm)
         else {
             reason_codes.insert(ReasonCode::AlgorithmMismatch);
-            diagnostics.push(candidate_diagnostic(
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
                 &candidate,
                 ReasonCode::AlgorithmMismatch,
-            ));
+            );
             continue;
         };
 
@@ -669,7 +694,12 @@ pub fn evaluate_policy_with_context(
         };
         if let Some(code) = status_code {
             reason_codes.insert(code);
-            diagnostics.push(candidate_diagnostic(&candidate, code));
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                &candidate,
+                code,
+            );
             continue;
         }
 
@@ -677,38 +707,54 @@ pub fn evaluate_policy_with_context(
             // A well-formed policy requires this mapping. Keep the branch
             // fail-closed in case future callers bypass validation.
             reason_codes.insert(ReasonCode::InvalidPolicy);
-            diagnostics.push(candidate_diagnostic(&candidate, ReasonCode::InvalidPolicy));
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                &candidate,
+                ReasonCode::InvalidPolicy,
+            );
             continue;
         };
         let Some(family_definition) = families.get(algorithm_definition.family.as_str()).copied()
         else {
             reason_codes.insert(ReasonCode::InvalidPolicy);
-            diagnostics.push(candidate_diagnostic(&candidate, ReasonCode::InvalidPolicy));
+            record_candidate_diagnostic(
+                &mut diagnostics,
+                &mut omitted_candidate_diagnostics,
+                &candidate,
+                ReasonCode::InvalidPolicy,
+            );
             continue;
         };
         match family_definition.status {
             FamilyStatus::Enabled => {}
             FamilyStatus::ObserveOnly => {
                 reason_codes.insert(ReasonCode::ObserveOnlyFamily);
-                diagnostics.push(candidate_diagnostic(
+                record_candidate_diagnostic(
+                    &mut diagnostics,
+                    &mut omitted_candidate_diagnostics,
                     &candidate,
                     ReasonCode::ObserveOnlyFamily,
-                ));
+                );
                 continue;
             }
             FamilyStatus::Deprecated => {
                 reason_codes.insert(ReasonCode::DeprecatedFamily);
-                diagnostics.push(candidate_diagnostic(
+                record_candidate_diagnostic(
+                    &mut diagnostics,
+                    &mut omitted_candidate_diagnostics,
                     &candidate,
                     ReasonCode::DeprecatedFamily,
-                ));
+                );
             }
             FamilyStatus::Forbidden => {
                 reason_codes.insert(ReasonCode::ForbiddenFamily);
-                diagnostics.push(candidate_diagnostic(
+                record_candidate_diagnostic(
+                    &mut diagnostics,
+                    &mut omitted_candidate_diagnostics,
                     &candidate,
                     ReasonCode::ForbiddenFamily,
-                ));
+                );
                 continue;
             }
         }
@@ -830,6 +876,7 @@ pub fn evaluate_policy_with_context(
         eligible_candidate_count,
         reason_codes,
         candidate_diagnostics: diagnostics,
+        omitted_candidate_diagnostics,
         clause_evaluations,
     }
 }
@@ -951,6 +998,19 @@ fn sort_candidate_diagnostics(diagnostics: &mut [CandidateDiagnostic]) {
     });
 }
 
+fn record_candidate_diagnostic(
+    diagnostics: &mut Vec<CandidateDiagnostic>,
+    omitted: &mut usize,
+    candidate: &SignatureCandidate,
+    code: ReasonCode,
+) {
+    if diagnostics.len() < MAX_CANDIDATE_DIAGNOSTICS {
+        diagnostics.push(candidate_diagnostic(candidate, code));
+    } else {
+        *omitted += 1;
+    }
+}
+
 fn candidate_diagnostic(candidate: &SignatureCandidate, code: ReasonCode) -> CandidateDiagnostic {
     CandidateDiagnostic {
         key_name: candidate.key_name.clone(),
@@ -997,8 +1057,7 @@ pub fn canonical_policy_sha256(policy: &SignaturePolicy) -> Result<String, serde
     let mut canonical = policy.clone();
     canonicalize_policy(&mut canonical);
     let bytes = serde_json::to_vec(&canonical)?;
-    let digest = Sha256::digest(bytes);
-    Ok(format!("{digest:x}"))
+    Ok(commitment_sha256(CommitmentDomain::Policy, &bytes))
 }
 
 /// Validate an append-only policy-chain transition.
@@ -1045,6 +1104,9 @@ pub fn validate_policy_structure(policy: &SignaturePolicy, trusted_keys: &[Trust
 }
 
 fn policy_is_well_formed(policy: &SignaturePolicy, trusted_keys: &[TrustedKey]) -> bool {
+    if !policy_within_resource_limits(policy, trusted_keys) {
+        return false;
+    }
     if policy.policy_id.is_empty()
         || policy.version == 0
         || policy.epoch == 0
@@ -1556,5 +1618,25 @@ mod tests {
         let decision = evaluate_policy(&malformed, &[], &[], 0);
         assert_eq!(decision.decision, Decision::Refuse);
         assert!(decision.reason_codes.contains(&ReasonCode::InvalidPolicy));
+    }
+
+    #[test]
+    fn candidate_diagnostics_are_bounded() {
+        let mut policy = policy(&[("classical", 1), ("post-quantum", 1)]);
+        policy.max_signature_observations = MAX_CANDIDATE_DIAGNOSTICS + 64;
+        let keys = vec![
+            key("ed", "cache", "owner", "ed25519"),
+            key("pq", "cache", "owner", "ml-dsa-65"),
+        ];
+        let duplicate = candidate("cache", "ed25519", "same-signature");
+        let mut candidates = vec![duplicate; MAX_CANDIDATE_DIAGNOSTICS + 32];
+        candidates.push(candidate("cache", "ml-dsa-65", "pq-signature"));
+        let decision = evaluate_policy(&policy, &keys, &candidates, 100);
+        assert_eq!(decision.decision, Decision::Accept);
+        assert_eq!(
+            decision.candidate_diagnostics.len(),
+            MAX_CANDIDATE_DIAGNOSTICS
+        );
+        assert_eq!(decision.omitted_candidate_diagnostics, 31);
     }
 }

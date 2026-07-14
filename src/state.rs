@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::commitment::{CommitmentDomain, commitment_sha256};
 
 use crate::integration::{
     AuthorizationRequest, INTEGRATION_CONTRACT_VERSION, SerializableEvaluationContext,
@@ -308,7 +309,10 @@ fn build_state_file(payload: TrustStatePayload) -> Result<TrustStateFile, TrustS
 
 fn payload_sha256(payload: &TrustStatePayload) -> Result<String, serde_json::Error> {
     let bytes = serde_json::to_vec(payload)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(commitment_sha256(
+        CommitmentDomain::TrustStatePayload,
+        &bytes,
+    ))
 }
 
 fn is_lower_sha256(value: &str) -> bool {

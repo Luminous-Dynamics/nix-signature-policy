@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nix_pqc_cache_proxy::narinfo::{MAX_NARINFO_BYTES, NarInfo};
+use nix_signature_policy::narinfo::{MAX_NARINFO_BYTES, NarInfo};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_NARINFO_BYTES {

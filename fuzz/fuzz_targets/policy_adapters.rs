@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use libfuzzer_sys::fuzz_target;
-use nix_pqc_cache_proxy::policy::{TrustedKey, VerificationOutcome};
-use nix_pqc_cache_proxy::policy_adapters::{
+use nix_signature_policy::policy::{TrustedKey, VerificationOutcome};
+use nix_signature_policy::policy_adapters::{
     AlgorithmTaggedSignature, ConformanceInput, NamedSignature, SemanticSignature, SigPqcSignature,
 };
 

@@ -146,6 +146,10 @@ A successor MUST advance the epoch and bind the canonical hash of its immediate
 predecessor. A client that has committed epoch `n` MUST refuse an object with an
 epoch lower than `n` for the same domain.
 
+Canonical policy, registry, receipt-payload, and trust-state commitments MUST be
+domain separated and length framed. An implementation MUST hash the validated,
+canonical typed representation rather than arbitrary source JSON bytes.
+
 Wall-clock time MUST NOT be the only rollback defense.
 
 ## 10. Enforcement modes

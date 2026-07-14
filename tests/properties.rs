@@ -1,15 +1,15 @@
 use std::collections::BTreeSet;
 
-use nix_pqc_cache_proxy::narinfo::{
+use nix_signature_policy::narinfo::{
     MAX_NARINFO_BYTES, MAX_NARINFO_LINE_BYTES, MAX_NARINFO_LINES, MAX_NARINFO_REFERENCES,
     MAX_NARINFO_SIGNATURE_FIELDS, NarInfo,
 };
-use nix_pqc_cache_proxy::policy::{
+use nix_signature_policy::policy::{
     AlgorithmDefinition, DEFAULT_MAX_SIGNATURE_OBSERVATIONS, Decision, FamilyDefinition,
     FamilyStatus, GroupDefinition, GroupPredicate, GroupRequirement, PolicyClause, ReasonCode,
     SignatureCandidate, SignaturePolicy, TrustedKey, VerificationOutcome, evaluate_policy,
 };
-use nix_pqc_cache_proxy::policy_adapters::{
+use nix_signature_policy::policy_adapters::{
     AlgorithmTaggedSignature, ConformanceInput, NamedSignature, SemanticSignature, SigPqcSignature,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};

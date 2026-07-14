@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use libfuzzer_sys::fuzz_target;
-use nix_pqc_cache_proxy::policy::{
+use nix_signature_policy::policy::{
     AlgorithmDefinition, FamilyDefinition, FamilyStatus, GroupDefinition, GroupPredicate,
     GroupRequirement, PolicyClause, SignatureCandidate, SignaturePolicy, TrustedKey,
     VerificationOutcome, evaluate_policy,

@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+use crate::commitment::{CommitmentDomain, commitment_sha256};
 
 use crate::integration::{
     AdmissionDecision, AdmissionReasonCode, AuthorizationRequest, BuiltInDecision, EnforcementMode,
@@ -226,7 +227,7 @@ fn validate_artifact(artifact: &ReceiptArtifact) -> Result<()> {
 
 fn payload_sha256(payload: &TrustReceiptPayload) -> Result<String> {
     let bytes = serde_json::to_vec(payload).context("serializing trust receipt payload")?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(commitment_sha256(CommitmentDomain::ReceiptPayload, &bytes))
 }
 
 fn is_lower_sha256(value: &str) -> bool {

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nix_pqc_cache_proxy::{keys, narinfo};
+use nix_signature_policy::{keys, narinfo};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > narinfo::MAX_SIGNATURE_ENTRY_BYTES {

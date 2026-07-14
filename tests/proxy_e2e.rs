@@ -21,9 +21,9 @@ use futures_util::{StreamExt, stream};
 use rand::RngCore;
 use tokio::sync::{Notify, oneshot};
 
-use nix_pqc_cache_proxy::keys::SecretKey;
-use nix_pqc_cache_proxy::narinfo::{self, NarInfo};
-use nix_pqc_cache_proxy::proxy::ProxyConfig;
+use nix_signature_policy::keys::SecretKey;
+use nix_signature_policy::narinfo::{self, NarInfo};
+use nix_signature_policy::proxy::ProxyConfig;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
@@ -124,7 +124,7 @@ async fn spawn_proxy_for_url(
     // We only need `secret` for signing inside the spawned proxy task; retain
     // an equivalent caller-side key for verifying the response signatures.
     let secret_bytes = secret.signer.to_bytes();
-    tokio::spawn(nix_pqc_cache_proxy::proxy::serve_with_config(
+    tokio::spawn(nix_signature_policy::proxy::serve_with_config(
         listener,
         upstream_url,
         upstream_pubkey,
@@ -134,7 +134,7 @@ async fn spawn_proxy_for_url(
 
     let secret_for_caller = SecretKey {
         name: "test-proxy-1".to_string(),
-        signer: nix_pqc_cache_proxy::hybrid::HybridSigner::from_bytes(&secret_bytes).unwrap(),
+        signer: nix_signature_policy::hybrid::HybridSigner::from_bytes(&secret_bytes).unwrap(),
     };
     (proxy_addr, secret_for_caller)
 }
@@ -205,13 +205,13 @@ async fn proxy_augments_narinfo_with_hybrid_signature() {
     // paired with the same-keyname Sig: line above, verifies as a hybrid pair.
     assert_eq!(info.sig_pqc.len(), 1);
     let (name, algorithm, _ml_dsa) =
-        nix_pqc_cache_proxy::keys::decode_sig_pqc(&info.sig_pqc[0]).unwrap();
+        nix_signature_policy::keys::decode_sig_pqc(&info.sig_pqc[0]).unwrap();
     assert_eq!(name, "test-proxy-1");
     assert_eq!(
         algorithm,
-        nix_pqc_cache_proxy::keys::SigPqcAlgorithm::MlDsa65
+        nix_signature_policy::keys::SigPqcAlgorithm::MlDsa65
     );
-    nix_pqc_cache_proxy::keys::verify_hybrid(&info, &fingerprint, &name, &secret.public().keys)
+    nix_signature_policy::keys::verify_hybrid(&info, &fingerprint, &name, &secret.public().keys)
         .expect("hybrid signature must verify");
 }
 
@@ -683,7 +683,7 @@ async fn graceful_shutdown_stops_accepting_and_returns_cleanly() {
     let proxy_addr = listener.local_addr().unwrap();
     let secret = SecretKey::generate("test-proxy-1");
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let task = tokio::spawn(nix_pqc_cache_proxy::proxy::serve_with_config_and_shutdown(
+    let task = tokio::spawn(nix_signature_policy::proxy::serve_with_config_and_shutdown(
         listener,
         "http://127.0.0.1:9".to_string(),
         test_upstream_pubkey(),

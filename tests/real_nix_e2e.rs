@@ -18,7 +18,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use nix_pqc_cache_proxy::keys::PublicKey;
+use nix_signature_policy::keys::PublicKey;
 
 struct KillOnDrop(Child);
 impl Drop for KillOnDrop {

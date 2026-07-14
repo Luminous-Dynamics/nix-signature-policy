@@ -1,0 +1,53 @@
+{
+  "target": {
+    "governance_version": 1,
+    "component": "policy",
+    "domain_id": "cache-policy",
+    "previous_epoch": 7,
+    "next_epoch": 8,
+    "previous_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "next_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "target_sha256": "e26b2974924112f4b0d9c95e507b3c07fbd39782f5206497c2194add4e59dc7f",
+  "rule": {
+    "rule_id": "two-family-recovery",
+    "required_role": "policy-root",
+    "min_distinct_identities": 2,
+    "min_distinct_families": 2,
+    "min_distinct_authorities": 2,
+    "forbidden_families": [
+      "lattice"
+    ],
+    "max_endorsements": 8
+  },
+  "endorsements": [
+    {
+      "endorsement_id": "root-a",
+      "signer_identity": "root-a",
+      "family": "elliptic_curve",
+      "authority": "org-a",
+      "roles": [
+        "policy-root"
+      ],
+      "target_sha256": "e26b2974924112f4b0d9c95e507b3c07fbd39782f5206497c2194add4e59dc7f",
+      "verification": "valid"
+    },
+    {
+      "endorsement_id": "root-b",
+      "signer_identity": "root-b",
+      "family": "hash_based",
+      "authority": "org-b",
+      "roles": [
+        "policy-root"
+      ],
+      "target_sha256": "e26b2974924112f4b0d9c95e507b3c07fbd39782f5206497c2194add4e59dc7f",
+      "verification": "valid"
+    }
+  ],
+  "expected": {
+    "decision": "accept",
+    "distinct_identity_count": 2,
+    "distinct_family_count": 2,
+    "distinct_authority_count": 2
+  }
+}

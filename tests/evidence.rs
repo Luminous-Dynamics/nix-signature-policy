@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::Path;
 
-use nix_pqc_cache_proxy::conformance::load_case;
-use nix_pqc_cache_proxy::evidence::{
+use nix_signature_policy::conformance::load_case;
+use nix_signature_policy::evidence::{
     AttestationStatus, EvidenceBundle, EvidenceFailureCode, EvidenceVerificationOptions,
     SourceBindingStatus, bundle_from_conformance_case, to_pretty_json, verify_bundle,
 };
-use nix_pqc_cache_proxy::keys::SecretKey;
+use nix_signature_policy::keys::SecretKey;
 
 const VECTOR: &str = "policy-vectors/adapter-parity/semantic-hybrid-valid.json";
 

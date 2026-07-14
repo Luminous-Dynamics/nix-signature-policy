@@ -1,11 +1,16 @@
 [package]
-name = "nix-pqc-cache-proxy"
+name = "nix-signature-policy"
+default-run = "nix-pqc-cache-proxy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"
 description = "Reference prototype for composable signature authorization on Nix binary-cache metadata"
 license = "AGPL-3.0-or-later"
 publish = false
+
+[lib]
+name = "nix_signature_policy"
+path = "src/lib.rs"
 
 [[bin]]
 name = "nix-pqc-cache-proxy"
@@ -30,6 +35,10 @@ path = "src/bin/trust-receipt.rs"
 [[bin]]
 name = "trust-state"
 path = "src/bin/trust-state.rs"
+
+[[bin]]
+name = "nix-signature-authorize"
+path = "src/bin/nix-signature-authorize.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -16,8 +16,8 @@ use std::fs;
 use std::path::Path;
 
 use base64::Engine;
-use nix_pqc_cache_proxy::keys::{self, SecretKey};
-use nix_pqc_cache_proxy::narinfo::NarInfo;
+use nix_signature_policy::keys::{self, SecretKey};
+use nix_signature_policy::narinfo::NarInfo;
 use serde_json::json;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =

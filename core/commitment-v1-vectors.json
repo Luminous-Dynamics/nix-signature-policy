@@ -1,0 +1,11 @@
+{
+  "commitment_format_version": 1,
+  "payload_utf8": "{}",
+  "vectors": {
+    "policy": "e7c4dac3f20b6a3f7cff17b9c0635a68f1c57725c894e8fd560bf0de81038eee",
+    "registry": "d7910f5b128fa9b5af07fcc710c02228fa0ead0f93977ccc0a03e66bd0761bb2",
+    "receipt-payload": "a252e2183fdcefdce1cfa6e93a061daae52e7532b74353beaa0f0eb9398c3105",
+    "trust-state-payload": "281b643774053132dba697b3819e26584d8bbe7138e051f579b9a03e8f260d21",
+    "transition": "1c61c9a3b15cd7402a7fc84d3009ac58dcc9b568f4de87a150c4b05dd5677fa7"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Luminous-Dynamics/nix-signature-policy/blob/main/core/core-v1.schema.json",
+  "title": "nix-signature-policy core-v1 descriptor",
+  "type": "object",
+  "required": [
+    "profile_id",
+    "profile_version",
+    "normative_spec_revision",
+    "policy_vector_schema_version",
+    "integration_contract_version",
+    "commitment_format_version",
+    "max_configurable_signature_observations",
+    "max_configurable_signature_candidates",
+    "max_candidate_diagnostics"
+  ],
+  "properties": {
+    "profile_id": {
+      "const": "core-v1"
+    },
+    "profile_version": {
+      "const": 1
+    },
+    "normative_spec_revision": {
+      "const": 1
+    },
+    "policy_vector_schema_version": {
+      "const": 2
+    },
+    "integration_contract_version": {
+      "const": 2
+    },
+    "commitment_format_version": {
+      "const": 1
+    },
+    "max_configurable_signature_observations": {
+      "const": 16384
+    },
+    "max_configurable_signature_candidates": {
+      "const": 4096
+    },
+    "max_candidate_diagnostics": {
+      "const": 256
+    }
+  },
+  "additionalProperties": false
+}
