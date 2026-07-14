@@ -1,0 +1,14 @@
+{
+  "description": "Same logical reference set as fingerprint-001, but one reference is repeated and the input order is shuffled. A conformant implementation must model Nix's StorePathSet semantics: sort and deduplicate before fingerprinting.",
+  "expected_fingerprint": "1;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37;sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48;1654112;/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37,/nix/store/q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66",
+  "narinfo_fields": {
+    "nar_hash": "sha256:0hbgkq56i09xjh7jkm3z1lwgbrhwazkyab7mw108m0fp0f59dj48",
+    "nar_size": 1654112,
+    "references": [
+      "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66",
+      "00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37",
+      "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66"
+    ],
+    "store_path": "/nix/store/00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37"
+  }
+}

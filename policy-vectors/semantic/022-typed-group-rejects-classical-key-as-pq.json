@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "case_id": "typed-group-rejects-classical-key-as-pq",
+  "description": "A classical algorithm cannot satisfy a post-quantum group merely because the key has a suggestive role or name.",
+  "tags": [
+    "typed-groups",
+    "downgrade",
+    "algorithm-registry"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "typed-policy",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      },
+      {
+        "algorithm": "ml-dsa-65",
+        "family": "lattice",
+        "assurance_class": "post_quantum"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "post-quantum",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "post_quantum"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "post-quantum",
+            "min_distinct_identities": 1
+          }
+        ],
+        "relations": []
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      },
+      {
+        "family": "lattice",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "pretend-pq",
+      "key_name": "cache",
+      "signer_identity": "cache-owner",
+      "algorithm": "ed25519",
+      "roles": [
+        "post-quantum"
+      ],
+      "authority": "cache-owner",
+      "custody_domain": "pretend-pq"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "pretend-pq",
+        "signature_id": "ed-good",
+        "verification": "valid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "refuse",
+    "required_reason_codes": [
+      "missing_required_group"
+    ],
+    "forbidden_reason_codes": [],
+    "group_counts": {
+      "post-quantum": 0
+    }
+  },
+  "minimum_policy_epoch": 0
+}

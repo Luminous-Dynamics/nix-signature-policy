@@ -1,13 +1,14 @@
-//! Codifies the manual end-to-end proof this crate was built against: build
-//! a real package, dual-sign it, serve it through our real proxy, and prove
+//! Codifies the manual end-to-end proof this crate was built against: select
+//! a real package store path, dual-sign it, serve it through our real proxy, and prove
 //! via `nix store verify` — Nix's own trust logic, not ours — that an
 //! unmodified `nix` trusts the hybrid-signed narinfo when only our key is
 //! trusted, and correctly refuses it when no key is trusted.
 //!
-//! `#[ignore]`d: needs a real `nix` binary, network access (to fetch
-//! `nixpkgs#hello` if not already cached), and `python3` (to serve the local
+//! `#[ignore]`d: needs a real `nix` binary and `python3` (to serve the local
 //! cache directory over HTTP, exactly as a human running the README's manual
-//! steps would). Run explicitly with:
+//! steps would). By default it resolves `nixpkgs#hello`; the reproducible flake
+//! apps instead set `NIX_PQC_E2E_STORE_PATH` to an already-built, pinned store
+//! path, avoiding registry and package-resolution drift. Run explicitly with:
 //!
 //! ```text
 //! cargo test --test real_nix_e2e -- --ignored --nocapture
@@ -51,7 +52,7 @@ fn run(cmd: &mut Command) -> String {
 }
 
 #[test]
-#[ignore = "needs a real `nix` binary, network, and python3 — see module docs"]
+#[ignore = "needs a real `nix` binary and python3 — see module docs"]
 fn real_nix_trusts_our_hybrid_resigned_narinfo() {
     if Command::new("nix").arg("--version").output().is_err() {
         eprintln!("SKIP: no `nix` binary on PATH");
@@ -71,11 +72,30 @@ fn real_nix_trusts_our_hybrid_resigned_narinfo() {
     std::fs::create_dir_all(&key_dir).unwrap();
     std::fs::create_dir_all(&dest_dir).unwrap();
 
-    // 1. Build a real package and push it into a local, unsigned file:// cache.
-    let store_path =
-        run(Command::new("nix").args(["build", "--no-link", "--print-out-paths", "nixpkgs#hello"]))
-            .trim()
-            .to_string();
+    // 1. Select a real store path and push it into a local, unsigned file://
+    // cache. Flake apps supply an already-built path from the pinned nixpkgs
+    // input. Manual runs retain the convenient nixpkgs#hello fallback.
+    let store_path = match std::env::var("NIX_PQC_E2E_STORE_PATH") {
+        Ok(path) => {
+            assert!(
+                path.starts_with("/nix/store/"),
+                "NIX_PQC_E2E_STORE_PATH must name a /nix/store path, got {path:?}"
+            );
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "NIX_PQC_E2E_STORE_PATH does not exist: {path}"
+            );
+            path
+        }
+        Err(_) => run(Command::new("nix").args([
+            "build",
+            "--no-link",
+            "--print-out-paths",
+            "nixpkgs#hello",
+        ]))
+        .trim()
+        .to_string(),
+    };
     run(Command::new("nix").args([
         "copy",
         "--to",

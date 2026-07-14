@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminousdynamics.org/schemas/nix-trust-receipt-v2.json",
+  "title": "Compact Nix trust-admission receipt v2",
+  "type": "object",
+  "required": [
+    "receipt_schema_version",
+    "payload_sha256",
+    "payload"
+  ],
+  "properties": {
+    "receipt_schema_version": {
+      "const": 2
+    },
+    "payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "payload": {
+      "$ref": "#/$defs/payload"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stringSet": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "identifier",
+        "canonical_fingerprint_sha256"
+      ],
+      "properties": {
+        "identifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonical_fingerprint_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "nar_hash": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "artifact",
+        "decision_time",
+        "minimum_policy_epoch",
+        "minimum_registry_epoch",
+        "enforcement_mode",
+        "built_in_decision",
+        "decision",
+        "policy_id",
+        "policy_version",
+        "policy_epoch",
+        "policy_sha256",
+        "registry_id",
+        "registry_epoch",
+        "registry_sha256",
+        "qualifying_identities",
+        "qualifying_families",
+        "qualifying_authorities",
+        "qualifying_custody_domains",
+        "policy_reason_codes",
+        "admission_reason_codes",
+        "registry_reason_codes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        },
+        "decision_time": {
+          "type": "integer"
+        },
+        "minimum_policy_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum_registry_epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "enforcement_mode": {
+          "enum": [
+            "legacy",
+            "supplemental",
+            "authoritative",
+            "conjunctive"
+          ]
+        },
+        "built_in_decision": {
+          "enum": [
+            "accept",
+            "refuse",
+            "not_evaluated"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "accept",
+            "refuse"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policy_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "registry_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "satisfied_clause": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualifying_identities": {
+          "$ref": "#/$defs/stringSet"
+        },
+        "qualifying_families": {
+          "$ref": "#/$defs/stringSet"
+        },
+        "qualifying_authorities": {
+          "$ref": "#/$defs/stringSet"
+        },
+        "qualifying_custody_domains": {
+          "$ref": "#/$defs/stringSet"
+        },
+        "policy_reason_codes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "invalid_policy",
+              "policy_rollback",
+              "policy_not_active",
+              "policy_expired",
+              "no_active_clause",
+              "too_many_observations",
+              "too_many_candidates",
+              "duplicate_candidate",
+              "conflicting_candidate",
+              "unknown_key",
+              "algorithm_mismatch",
+              "invalid_signature",
+              "malformed_signature",
+              "revoked_key",
+              "not_yet_valid_key",
+              "expired_key",
+              "observe_only_family",
+              "deprecated_family",
+              "forbidden_family",
+              "missing_required_group",
+              "missing_required_relation"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "admission_reason_codes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "unsupported_contract_version",
+              "built_in_accepted",
+              "built_in_refused",
+              "built_in_not_evaluated",
+              "policy_accepted",
+              "policy_refused",
+              "supplemental_path_accepted",
+              "authoritative_policy_required",
+              "conjunctive_requirement_failed",
+              "registry_accepted",
+              "registry_refused",
+              "registry_required"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "registry_reason_codes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "invalid_registry",
+              "registry_rollback"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

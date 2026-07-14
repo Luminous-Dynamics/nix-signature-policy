@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminousdynamics.org/schemas/nix-trust-receipt-v1.json",
+  "title": "Compact Nix trust-admission receipt v1",
+  "type": "object",
+  "required": ["receipt_schema_version", "payload_sha256", "payload"],
+  "properties": {
+    "receipt_schema_version": {"const": 1},
+    "payload_sha256": {"$ref": "#/$defs/sha256"},
+    "payload": {"$ref": "#/$defs/payload"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "stringSet": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "artifact": {
+      "type": "object",
+      "required": ["identifier", "canonical_fingerprint_sha256"],
+      "properties": {
+        "identifier": {"type": "string", "minLength": 1},
+        "canonical_fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+        "nar_hash": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "schema_version", "artifact", "decision_time", "minimum_policy_epoch",
+        "enforcement_mode", "built_in_decision", "decision", "policy_id",
+        "policy_version", "policy_epoch", "policy_sha256", "qualifying_identities",
+        "qualifying_families", "qualifying_authorities", "qualifying_custody_domains",
+        "policy_reason_codes", "admission_reason_codes"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "decision_time": {"type": "integer"},
+        "minimum_policy_epoch": {"type": "integer", "minimum": 0},
+        "enforcement_mode": {"enum": ["legacy", "supplemental", "authoritative", "conjunctive"]},
+        "built_in_decision": {"enum": ["accept", "refuse", "not_evaluated"]},
+        "decision": {"enum": ["accept", "refuse"]},
+        "policy_id": {"type": "string", "minLength": 1},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "policy_epoch": {"type": "integer", "minimum": 1},
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "satisfied_clause": {"type": "string", "minLength": 1},
+        "qualifying_identities": {"$ref": "#/$defs/stringSet"},
+        "qualifying_families": {"$ref": "#/$defs/stringSet"},
+        "qualifying_authorities": {"$ref": "#/$defs/stringSet"},
+        "qualifying_custody_domains": {"$ref": "#/$defs/stringSet"},
+        "policy_reason_codes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "admission_reason_codes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    }
+  }
+}

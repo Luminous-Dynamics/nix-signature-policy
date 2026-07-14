@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/release/attestation-schema-v1.json",
+  "title": "nix-pqc-cache-proxy hybrid artifact attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bundle_schema_version", "payload_sha256", "payload", "attestation"],
+  "properties": {
+    "bundle_schema_version": {"const": 1},
+    "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "domain", "identifier", "sha256", "size_bytes"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "domain": {"const": "release_statement"},
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^/\\\\]+$",
+          "not": {"enum": [".", ".."]}
+        },
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_name",
+        "ed25519_public_key_base64",
+        "ml_dsa_65_public_key_base64",
+        "ed25519_signature_base64",
+        "ml_dsa_65_signature_base64"
+      ],
+      "properties": {
+        "algorithm": {"const": "ed25519+ml-dsa-65"},
+        "key_name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "ed25519_public_key_base64": {"type": "string", "minLength": 44, "maxLength": 44},
+        "ml_dsa_65_public_key_base64": {"type": "string", "minLength": 2604, "maxLength": 2604},
+        "ed25519_signature_base64": {"type": "string", "minLength": 88, "maxLength": 88},
+        "ml_dsa_65_signature_base64": {"type": "string", "minLength": 4412, "maxLength": 4412}
+      }
+    }
+  }
+}

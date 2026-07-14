@@ -1,0 +1,47 @@
+{
+  "receipt_schema_version": 2,
+  "payload_sha256": "28ae67cdf3458a321d3f043e40e6bd7a004905475b6cb405d860cb40d892b18a",
+  "payload": {
+    "schema_version": 2,
+    "artifact": {
+      "identifier": "/nix/store/example-system",
+      "canonical_fingerprint_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "nar_hash": "sha256:example"
+    },
+    "decision_time": 100,
+    "minimum_policy_epoch": 1,
+    "enforcement_mode": "authoritative",
+    "built_in_decision": "accept",
+    "decision": "accept",
+    "policy_id": "receipt-policy",
+    "policy_version": 1,
+    "policy_epoch": 1,
+    "policy_sha256": "f9635bf956992cece41c65f2c03656003ddfdc690197ad6aeb3eeec935ed99b4",
+    "satisfied_clause": "required",
+    "qualifying_identities": [
+      "cache-owner"
+    ],
+    "qualifying_families": [
+      "hash_based"
+    ],
+    "qualifying_authorities": [
+      "cache-owner"
+    ],
+    "qualifying_custody_domains": [
+      "offline-hsm"
+    ],
+    "policy_reason_codes": [],
+    "admission_reason_codes": [
+      "authoritative_policy_required",
+      "built_in_accepted",
+      "policy_accepted",
+      "registry_accepted",
+      "registry_required"
+    ],
+    "minimum_registry_epoch": 1,
+    "registry_id": "receipt-cache-keys",
+    "registry_epoch": 1,
+    "registry_sha256": "b1d844453ed4d942b61378a496b7d43b4d375375b1a46c8038354075b0465419",
+    "registry_reason_codes": []
+  }
+}

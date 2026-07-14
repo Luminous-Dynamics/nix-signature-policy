@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminousdynamics.org/schemas/nix-local-trust-state-v1.json",
+  "title": "Local Nix trust rollback checkpoint v1",
+  "type": "object",
+  "required": ["state_schema_version", "payload_sha256", "payload"],
+  "properties": {
+    "state_schema_version": {"const": 1},
+    "payload_sha256": {"$ref": "#/$defs/sha256"},
+    "payload": {"$ref": "#/$defs/payload"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "entry": {
+      "type": "object",
+      "required": ["policy_id", "policy_epoch", "policy_sha256", "registry_id", "registry_epoch", "registry_sha256"],
+      "properties": {
+        "policy_id": {"type": "string", "minLength": 1},
+        "policy_epoch": {"type": "integer", "minimum": 1},
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "registry_id": {"type": "string", "minLength": 1},
+        "registry_epoch": {"type": "integer", "minimum": 1},
+        "registry_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "payload": {
+      "type": "object",
+      "required": ["schema_version", "domains"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "domains": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"minLength": 1},
+          "additionalProperties": {"$ref": "#/$defs/entry"}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

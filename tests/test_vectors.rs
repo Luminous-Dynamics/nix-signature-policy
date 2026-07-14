@@ -46,6 +46,7 @@ fn fingerprint_vectors_match() {
         "fingerprint-001-with-references",
         "fingerprint-002-no-references",
         "fingerprint-003-shuffled-references",
+        "fingerprint-004-duplicate-references",
     ] {
         let vector = load(name);
         let info = narinfo_from_fields(&vector["narinfo_fields"]);
@@ -72,6 +73,20 @@ fn shuffled_references_vector_matches_canonical_vector() {
     assert_eq!(
         canonical["expected_fingerprint"], shuffled["expected_fingerprint"],
         "shuffled reference order must not change the fingerprint"
+    );
+}
+
+#[test]
+fn duplicate_references_vector_matches_canonical_vector() {
+    let canonical = load("fingerprint-001-with-references");
+    let duplicated = load("fingerprint-004-duplicate-references");
+    assert_ne!(
+        canonical["narinfo_fields"]["references"], duplicated["narinfo_fields"]["references"],
+        "the duplicate-reference vector must exercise a distinct input"
+    );
+    assert_eq!(
+        canonical["expected_fingerprint"], duplicated["expected_fingerprint"],
+        "duplicate references must not change StorePathSet fingerprint semantics"
     );
 }
 

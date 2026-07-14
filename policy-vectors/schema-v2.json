@@ -1,0 +1,654 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://luminousdynamics.org/schemas/nix-signature-policy-vector-v2.json",
+  "title": "Nix signature-policy conformance vector v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "case_id",
+    "description",
+    "policy",
+    "trusted_keys",
+    "input",
+    "expected"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "evaluation_time": {
+      "type": "integer"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "trusted_keys": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/trustedKey"
+      }
+    },
+    "input": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/semanticInput"
+        },
+        {
+          "$ref": "#/$defs/sigPqcInput"
+        },
+        {
+          "$ref": "#/$defs/algorithmTaggedInput"
+        }
+      ]
+    },
+    "expected": {
+      "$ref": "#/$defs/expected"
+    },
+    "minimum_policy_epoch": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyStringSet": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "verification": {
+      "enum": [
+        "valid",
+        "invalid",
+        "malformed"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "invalid_policy",
+        "forbidden_family",
+        "deprecated_family",
+        "observe_only_family",
+        "no_active_clause",
+        "policy_expired",
+        "policy_not_active",
+        "policy_rollback",
+        "too_many_observations",
+        "too_many_candidates",
+        "duplicate_candidate",
+        "conflicting_candidate",
+        "unknown_key",
+        "algorithm_mismatch",
+        "invalid_signature",
+        "malformed_signature",
+        "revoked_key",
+        "not_yet_valid_key",
+        "expired_key",
+        "missing_required_group",
+        "missing_required_relation"
+      ]
+    },
+    "algorithmDefinition": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "family",
+        "assurance_class"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assurance_class": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "groupPredicate": {
+      "type": "object",
+      "properties": {
+        "match_all": {
+          "type": "boolean"
+        },
+        "allowed_algorithms": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "allowed_families": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "allowed_assurance_classes": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "required_roles": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "allowed_authorities": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "allowed_custody_domains": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "groupDefinition": {
+      "type": "object",
+      "required": [
+        "group",
+        "predicate"
+      ],
+      "properties": {
+        "group": {
+          "type": "string",
+          "minLength": 1
+        },
+        "predicate": {
+          "$ref": "#/$defs/groupPredicate"
+        }
+      },
+      "additionalProperties": false
+    },
+    "groupRequirement": {
+      "type": "object",
+      "required": [
+        "group"
+      ],
+      "properties": {
+        "group": {
+          "type": "string",
+          "minLength": 1
+        },
+        "min_distinct_identities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_distinct_families": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_distinct_authorities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_distinct_custody_domains": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 2
+    },
+    "groupRelation": {
+      "type": "object",
+      "required": [
+        "relation_id",
+        "attribute",
+        "mode",
+        "groups"
+      ],
+      "properties": {
+        "relation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attribute": {
+          "enum": [
+            "identity",
+            "family",
+            "authority",
+            "custody_domain"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "same",
+            "distinct"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "clause": {
+      "type": "object",
+      "required": [
+        "clause_id",
+        "required_groups"
+      ],
+      "properties": {
+        "clause_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required_groups": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/groupRequirement"
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/groupRelation"
+          }
+        },
+        "active_from": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "active_until": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "policy_id",
+        "version",
+        "family_registry",
+        "algorithm_registry",
+        "group_definitions",
+        "accept_if_any"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_signature_observations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "max_signature_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "algorithm_registry": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/algorithmDefinition"
+          }
+        },
+        "group_definitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/groupDefinition"
+          }
+        },
+        "accept_if_any": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/clause"
+          }
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "previous_policy_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "active_from": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "family_registry": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/familyDefinition"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "trustedKey": {
+      "type": "object",
+      "required": [
+        "key_id",
+        "key_name",
+        "signer_identity",
+        "algorithm",
+        "authority",
+        "custody_domain"
+      ],
+      "properties": {
+        "key_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signer_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "roles": {
+          "$ref": "#/$defs/nonEmptyStringSet"
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "custody_domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revoked": {
+          "type": "boolean"
+        },
+        "valid_from": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "valid_until": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "semanticSignature": {
+      "type": "object",
+      "required": [
+        "key_id",
+        "signature_id",
+        "verification"
+      ],
+      "properties": {
+        "key_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      },
+      "additionalProperties": false
+    },
+    "namedSignature": {
+      "type": "object",
+      "required": [
+        "key_name",
+        "signature_id",
+        "verification"
+      ],
+      "properties": {
+        "key_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sigPqcSignature": {
+      "type": "object",
+      "required": [
+        "key_name",
+        "algorithm_tag",
+        "signature_id",
+        "verification"
+      ],
+      "properties": {
+        "key_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm_tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      },
+      "additionalProperties": false
+    },
+    "algorithmTaggedSignature": {
+      "type": "object",
+      "required": [
+        "key_name",
+        "algorithm",
+        "signature_id",
+        "verification"
+      ],
+      "properties": {
+        "key_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      },
+      "additionalProperties": false
+    },
+    "semanticInput": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "signatures"
+      ],
+      "properties": {
+        "adapter": {
+          "const": "semantic"
+        },
+        "signatures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/semanticSignature"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "sigPqcInput": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "sig",
+        "sig_pqc"
+      ],
+      "properties": {
+        "adapter": {
+          "const": "sig-pqc"
+        },
+        "sig": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedSignature"
+          }
+        },
+        "sig_pqc": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sigPqcSignature"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "algorithmTaggedInput": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "signatures"
+      ],
+      "properties": {
+        "adapter": {
+          "const": "algorithm-tagged"
+        },
+        "signatures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/algorithmTaggedSignature"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "decision"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "accept",
+            "refuse"
+          ]
+        },
+        "satisfied_clause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required_reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reasonCode"
+          },
+          "uniqueItems": true
+        },
+        "forbidden_reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reasonCode"
+          },
+          "uniqueItems": true
+        },
+        "group_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "familyStatus": {
+      "enum": [
+        "enabled",
+        "observe_only",
+        "deprecated",
+        "forbidden"
+      ]
+    },
+    "familyDefinition": {
+      "type": "object",
+      "required": [
+        "family"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "$ref": "#/$defs/familyStatus"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

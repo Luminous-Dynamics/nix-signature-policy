@@ -1,0 +1,132 @@
+{
+  "schema_version": 2,
+  "case_id": "hybrid-rejects-pq-only",
+  "description": "A post-quantum signature alone does not satisfy a classical-and-PQ profile.",
+  "tags": [
+    "downgrade",
+    "hybrid"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "hybrid-required",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      },
+      {
+        "algorithm": "ml-dsa-65",
+        "family": "lattice",
+        "assurance_class": "post_quantum"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "classical",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "classical"
+          ]
+        }
+      },
+      {
+        "group": "post-quantum",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "post_quantum"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "classical",
+            "min_distinct_identities": 1
+          },
+          {
+            "group": "post-quantum",
+            "min_distinct_identities": 1
+          }
+        ],
+        "relations": [
+          {
+            "relation_id": "same-signer-identity",
+            "attribute": "identity",
+            "mode": "same",
+            "groups": [
+              "classical",
+              "post-quantum"
+            ]
+          }
+        ]
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      },
+      {
+        "family": "lattice",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "cache-ed",
+      "key_name": "cache",
+      "signer_identity": "cache-owner",
+      "algorithm": "ed25519",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "cache-owner",
+      "custody_domain": "cache-ed"
+    },
+    {
+      "key_id": "cache-pq",
+      "key_name": "cache",
+      "signer_identity": "cache-owner",
+      "algorithm": "ml-dsa-65",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "cache-owner",
+      "custody_domain": "cache-pq"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "cache-pq",
+        "signature_id": "pq-good",
+        "verification": "valid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "refuse",
+    "required_reason_codes": [
+      "missing_required_group"
+    ],
+    "forbidden_reason_codes": [],
+    "group_counts": {
+      "classical": 0,
+      "post-quantum": 1
+    }
+  },
+  "minimum_policy_epoch": 0
+}

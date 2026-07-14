@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/release/schema-v1.json",
+  "title": "nix-pqc-cache-proxy deterministic release statement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project", "source", "artifacts", "inputs"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "source_date_epoch", "tree_state"],
+      "properties": {
+        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "source_date_epoch": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "tree_state": {"const": "clean"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path", "sha256", "size_bytes"],
+        "properties": {
+          "kind": {"enum": ["source_archive", "source_manifest"]},
+          "path": {"type": "string", "pattern": "^[^/]+$"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cargo_lock_sha256",
+        "flake_lock_sha256",
+        "policy_vectors_manifest_sha256",
+        "evidence_manifest_sha256",
+        "fuzz_manifest_sha256"
+      ],
+      "properties": {
+        "cargo_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "flake_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "policy_vectors_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evidence_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fuzz_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

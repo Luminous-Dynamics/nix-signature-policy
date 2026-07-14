@@ -1,0 +1,359 @@
+{
+  "manifest_schema_version": 1,
+  "vector_schema_version": 2,
+  "normative_spec_revision": 1,
+  "profiles": {
+    "core-v1": [
+      "classical-policy-valid",
+      "hybrid-rejects-classical-only",
+      "hybrid-rejects-pq-only",
+      "hybrid-rejects-invalid-pq",
+      "duplicate-does-not-inflate-threshold",
+      "unknown-key-does-not-sabotage-valid-hybrid",
+      "revoked-pq-key-refused",
+      "too-many-candidates-refused-explicitly",
+      "conflicting-duplicate-refuses-order-independently",
+      "typed-group-rejects-classical-key-as-pq",
+      "bound-hybrid-rejects-different-identities",
+      "pq-group-requires-two-families",
+      "raw-observation-cap-precedes-deduplication",
+      "expired-legacy-migration-clause-refused",
+      "policy-rollback-refused",
+      "forbidden-lattice-family-refused",
+      "recovery-to-hash-based-pq-accepts",
+      "observe-only-pq-does-not-authorize"
+    ]
+  },
+  "vectors": [
+    {
+      "case_id": "adapter-parity-algorithm-tagged-hybrid-valid",
+      "path": "policy-vectors/adapter-parity/algorithm-tagged-hybrid-valid.json",
+      "sha256": "697d429c18694499aa444ae52e9bf1bfd740983888fc749ba71ac9eac48e0ce3",
+      "adapter": "algorithm-tagged",
+      "tags": [
+        "adapter-parity",
+        "algorithm-tagged",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "adapter-parity-semantic-hybrid-valid",
+      "path": "policy-vectors/adapter-parity/semantic-hybrid-valid.json",
+      "sha256": "3c3885bdbcf506d6d1c318ec0f27e0856aa309b43ee3f18463ba9d8d27b3aabb",
+      "adapter": "semantic",
+      "tags": [
+        "adapter-parity",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "adapter-parity-sig-pqc-hybrid-valid",
+      "path": "policy-vectors/adapter-parity/sig-pqc-hybrid-valid.json",
+      "sha256": "0c32673f02c516b1317e130058c13748829aadf10323b3e01ee54da02e54d3de",
+      "adapter": "sig-pqc",
+      "tags": [
+        "adapter-parity",
+        "hybrid",
+        "sig-pqc"
+      ]
+    },
+    {
+      "case_id": "classical-policy-valid",
+      "path": "policy-vectors/semantic/001-classical-policy-valid.json",
+      "sha256": "81f674fc1a0ec4a1548a583f7ec23163451d3720191c6021ea02f423fc90ba2c",
+      "adapter": "semantic",
+      "tags": [
+        "baseline",
+        "classical"
+      ]
+    },
+    {
+      "case_id": "hybrid-rejects-classical-only",
+      "path": "policy-vectors/semantic/002-hybrid-rejects-classical-only.json",
+      "sha256": "757d6c9ad7505b0a88297c166a28e59b6a8a397699a3b8e308f94824b811214d",
+      "adapter": "semantic",
+      "tags": [
+        "downgrade",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "hybrid-rejects-pq-only",
+      "path": "policy-vectors/semantic/003-hybrid-rejects-pq-only.json",
+      "sha256": "b0bea4a593f7ad8039ae6e4bc82cc990f9a5a35f46ec345dadbb920285de3c5d",
+      "adapter": "semantic",
+      "tags": [
+        "downgrade",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "hybrid-rejects-invalid-pq",
+      "path": "policy-vectors/semantic/005-hybrid-rejects-invalid-pq.json",
+      "sha256": "501cb888c8e53cf6ab6eac18d452a92b15ce1e9523883bb9270747c048ad1584",
+      "adapter": "semantic",
+      "tags": [
+        "adversarial",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "hybrid-rejects-invalid-classical",
+      "path": "policy-vectors/semantic/006-hybrid-rejects-invalid-classical.json",
+      "sha256": "bbcebd7fa44a8a7ebc81e4962c904cb0fc13c937f9a42a8591e451ea9f7aaa9f",
+      "adapter": "semantic",
+      "tags": [
+        "adversarial",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "duplicate-does-not-inflate-threshold",
+      "path": "policy-vectors/semantic/007-duplicate-does-not-inflate-threshold.json",
+      "sha256": "b401beca29ed036c4b973c1075f8e95d1c0cd289ac28a3ae8fff963588a1ed45",
+      "adapter": "semantic",
+      "tags": [
+        "duplicate",
+        "threshold"
+      ]
+    },
+    {
+      "case_id": "two-identities-satisfy-threshold",
+      "path": "policy-vectors/semantic/008-two-identities-satisfy-threshold.json",
+      "sha256": "b5b3f5e65f351400ad241fe895813d1816c1f103ba63ccb2ad7df8706a171ab6",
+      "adapter": "semantic",
+      "tags": [
+        "identity",
+        "threshold"
+      ]
+    },
+    {
+      "case_id": "same-identity-does-not-inflate-threshold",
+      "path": "policy-vectors/semantic/009-same-identity-does-not-inflate-threshold.json",
+      "sha256": "e9e72273d33cdf37c959ba342300c144af125a7b7b034d6df4ef0f74b5b0ffe4",
+      "adapter": "semantic",
+      "tags": [
+        "identity",
+        "threshold"
+      ]
+    },
+    {
+      "case_id": "unknown-key-does-not-sabotage-valid-hybrid",
+      "path": "policy-vectors/semantic/010-unknown-key-does-not-sabotage-valid-hybrid.json",
+      "sha256": "7217ec1d9e960facac3f5dfb77723b482352e652025026ad220437652351c0d7",
+      "adapter": "semantic",
+      "tags": [
+        "hybrid",
+        "unknown-key"
+      ]
+    },
+    {
+      "case_id": "revoked-pq-key-refused",
+      "path": "policy-vectors/semantic/011-revoked-pq-key-refused.json",
+      "sha256": "5489a77c5d5efc20b8798724784987212f2af285defc4754d91c6c3eac8cad8f",
+      "adapter": "semantic",
+      "tags": [
+        "hybrid",
+        "revocation"
+      ]
+    },
+    {
+      "case_id": "expired-pq-key-refused",
+      "path": "policy-vectors/semantic/012-expired-pq-key-refused.json",
+      "sha256": "b761b2b93d1ef2459abba8279c11caf030cc882c17ac750af96501c00cc41a8f",
+      "adapter": "semantic",
+      "tags": [
+        "expiry",
+        "hybrid"
+      ]
+    },
+    {
+      "case_id": "not-yet-valid-pq-key-refused",
+      "path": "policy-vectors/semantic/013-not-yet-valid-pq-key-refused.json",
+      "sha256": "d729063654fd4ac003a635aec3647784d39c3742bba3508e070607c587969835",
+      "adapter": "semantic",
+      "tags": [
+        "hybrid",
+        "validity"
+      ]
+    },
+    {
+      "case_id": "too-many-candidates-refused-explicitly",
+      "path": "policy-vectors/semantic/014-too-many-candidates-refused-explicitly.json",
+      "sha256": "5699b0d233e670b3c1980641e4ffa736120f319657db26f2b9b1af53b5c41c95",
+      "adapter": "semantic",
+      "tags": [
+        "adversarial",
+        "resource-bound"
+      ]
+    },
+    {
+      "case_id": "malformed-extra-does-not-sabotage-valid-hybrid",
+      "path": "policy-vectors/semantic/015-malformed-extra-does-not-sabotage-valid-hybrid.json",
+      "sha256": "48fec22dc010e2d04ed1e3e143aba191c07345d9d8f88c9a2b0a09908ef892d9",
+      "adapter": "semantic",
+      "tags": [
+        "hybrid",
+        "malformed"
+      ]
+    },
+    {
+      "case_id": "explicit-migration-clause-allows-legacy",
+      "path": "policy-vectors/semantic/016-explicit-migration-clause-allows-legacy.json",
+      "sha256": "a33bca61a0a8c3120d6ffc2b1937d8736e1fca71b6df241fa26031674906a49a",
+      "adapter": "semantic",
+      "tags": [
+        "explicit-fallback",
+        "migration"
+      ]
+    },
+    {
+      "case_id": "conflicting-duplicate-refuses-order-independently",
+      "path": "policy-vectors/semantic/021-conflicting-duplicate-refused.json",
+      "sha256": "55a453d471cc02d4cf1c7a40993ae2ee65e1ae17a30226dda79d9514d074be54",
+      "adapter": "semantic",
+      "tags": [
+        "bounded-work",
+        "determinism",
+        "fail-closed"
+      ]
+    },
+    {
+      "case_id": "typed-group-rejects-classical-key-as-pq",
+      "path": "policy-vectors/semantic/022-typed-group-rejects-classical-key-as-pq.json",
+      "sha256": "95ec213bda1b5c6bb7955391e3b4e865a5ca13a3686fdb178fdfa1caa4cbd2c7",
+      "adapter": "semantic",
+      "tags": [
+        "algorithm-registry",
+        "downgrade",
+        "typed-groups"
+      ]
+    },
+    {
+      "case_id": "bound-hybrid-rejects-different-identities",
+      "path": "policy-vectors/semantic/023-bound-hybrid-rejects-different-identities.json",
+      "sha256": "699829d3f359409045a5fb3d22d72ec3e3123f7e1b9a499c4c671a0c625f7ffa",
+      "adapter": "semantic",
+      "tags": [
+        "downgrade",
+        "hybrid",
+        "identity-binding"
+      ]
+    },
+    {
+      "case_id": "independent-authorities-accept-distinct-identities",
+      "path": "policy-vectors/semantic/024-independent-authorities-accept-distinct-identities.json",
+      "sha256": "3fd018ef772da8c15fde1d4e1cc66ccb9df4806c85b147e398e6cd0cec87c5d9",
+      "adapter": "semantic",
+      "tags": [
+        "identity-diversity",
+        "independent-authority"
+      ]
+    },
+    {
+      "case_id": "pq-group-requires-two-families",
+      "path": "policy-vectors/semantic/025-pq-group-requires-two-families.json",
+      "sha256": "c3ca3cdddf9b9d778624e4cd8b99d1cbd079732fad78c4b3286a9a92aa583c6a",
+      "adapter": "semantic",
+      "tags": [
+        "family-diversity",
+        "post-quantum"
+      ]
+    },
+    {
+      "case_id": "raw-observation-cap-precedes-deduplication",
+      "path": "policy-vectors/semantic/026-raw-observation-cap-precedes-deduplication.json",
+      "sha256": "5ed14db72ca7a83f81e5dc735022e054362c5101d15a2751579fee88902ac377",
+      "adapter": "semantic",
+      "tags": [
+        "denial-of-service",
+        "duplicates",
+        "resource-bounds"
+      ]
+    },
+    {
+      "case_id": "expired-legacy-migration-clause-refused",
+      "path": "policy-vectors/semantic/027-expired-legacy-migration-clause-refused.json",
+      "sha256": "101215745af2102cc828bdbcbaf21f44fa25cc49f72da6e693b4cd03cd43cbc9",
+      "adapter": "semantic",
+      "tags": [
+        "downgrade",
+        "expiry",
+        "migration"
+      ]
+    },
+    {
+      "case_id": "policy-rollback-refused",
+      "path": "policy-vectors/semantic/028-policy-rollback-refused.json",
+      "sha256": "3b94b3534bce7d68b04d3ab70ea28203935366c6264c5e08f4788b22fe84a227",
+      "adapter": "semantic",
+      "tags": [
+        "anti-rollback",
+        "policy-chain"
+      ]
+    },
+    {
+      "case_id": "forbidden-lattice-family-refused",
+      "path": "policy-vectors/semantic/029-forbidden-lattice-family-refused.json",
+      "sha256": "98f01a0b76704eb01a8ea3013434dc5ef4300f17f9b563326c8625fd1a14e6e6",
+      "adapter": "semantic",
+      "tags": [
+        "family-lifecycle",
+        "incident-response"
+      ]
+    },
+    {
+      "case_id": "recovery-to-hash-based-pq-accepts",
+      "path": "policy-vectors/semantic/030-recovery-to-hash-based-pq-accepts.json",
+      "sha256": "d0ed22567196d88aeab16b8b64e216ea6f6a3112eba6d8c4d5544dc84253f502",
+      "adapter": "semantic",
+      "tags": [
+        "family-lifecycle",
+        "hash-based",
+        "recovery"
+      ]
+    },
+    {
+      "case_id": "observe-only-pq-does-not-authorize",
+      "path": "policy-vectors/semantic/031-observe-only-pq-does-not-authorize.json",
+      "sha256": "46228945f7ceb05f8bb0726876b6b364978cbb57c1572107d1cb1ab787200053",
+      "adapter": "semantic",
+      "tags": [
+        "family-lifecycle",
+        "observe"
+      ]
+    },
+    {
+      "case_id": "expired-policy-refused",
+      "path": "policy-vectors/semantic/032-expired-policy-refused.json",
+      "sha256": "088829fc67842dbbe5e0a5a3c91ad9f7558d50553128e44035503caa5166cfac",
+      "adapter": "semantic",
+      "tags": [
+        "expiry",
+        "policy-lifecycle"
+      ]
+    },
+    {
+      "case_id": "sig-pqc-unknown-tag-then-valid",
+      "path": "policy-vectors/transport/016-sig-pqc-unknown-tag-then-valid.json",
+      "sha256": "611b4adfc200ce76ab37df8a684d4d63d8b44388d14ceed2aa229eda0cc3258a",
+      "adapter": "sig-pqc",
+      "tags": [
+        "hybrid",
+        "sig-pqc",
+        "unknown-algorithm"
+      ]
+    },
+    {
+      "case_id": "algorithm-tagged-mismatch-then-valid",
+      "path": "policy-vectors/transport/018-algorithm-tagged-mismatch-then-valid.json",
+      "sha256": "d41da133f29355e7011379f4233f96d368fc0b0f28ca4d8124210e9a683b4e62",
+      "adapter": "algorithm-tagged",
+      "tags": [
+        "algorithm-tagged",
+        "hybrid",
+        "unknown-algorithm"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+[package]
+name = "nix-pqc-cache-proxy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+nix-pqc-cache-proxy = { path = ".." }
+
+[[bin]]
+name = "narinfo_parse"
+path = "fuzz_targets/narinfo_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_evaluator"
+path = "fuzz_targets/policy_evaluator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_adapters"
+path = "fuzz_targets/policy_adapters.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature_codecs"
+path = "fuzz_targets/signature_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evidence_bundle"
+path = "fuzz_targets/evidence_bundle.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "case_id": "two-identities-satisfy-threshold",
+  "description": "Two valid keys assigned to two logical identities satisfy a threshold of two.",
+  "tags": [
+    "threshold",
+    "identity"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "two-classical-identities",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "classical",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "classical"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "classical",
+            "min_distinct_identities": 2
+          }
+        ],
+        "relations": []
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "ed-a",
+      "key_name": "cache-a",
+      "signer_identity": "owner-a",
+      "algorithm": "ed25519",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "owner-a",
+      "custody_domain": "ed-a"
+    },
+    {
+      "key_id": "ed-b",
+      "key_name": "cache-b",
+      "signer_identity": "owner-b",
+      "algorithm": "ed25519",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "owner-b",
+      "custody_domain": "ed-b"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "ed-a",
+        "signature_id": "sig-a",
+        "verification": "valid"
+      },
+      {
+        "key_id": "ed-b",
+        "signature_id": "sig-b",
+        "verification": "valid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "accept",
+    "required_reason_codes": [],
+    "forbidden_reason_codes": [
+      "missing_required_group"
+    ],
+    "group_counts": {
+      "classical": 2
+    },
+    "satisfied_clause": "required"
+  },
+  "minimum_policy_epoch": 0
+}

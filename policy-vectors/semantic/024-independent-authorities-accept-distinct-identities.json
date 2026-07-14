@@ -1,0 +1,139 @@
+{
+  "schema_version": 2,
+  "case_id": "independent-authorities-accept-distinct-identities",
+  "description": "An independent-authority profile accepts a classical and PQ approval only when distinct signer identities can witness the relation.",
+  "tags": [
+    "independent-authority",
+    "identity-diversity"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "typed-policy",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      },
+      {
+        "algorithm": "ml-dsa-65",
+        "family": "lattice",
+        "assurance_class": "post_quantum"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "classical",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "classical"
+          ]
+        }
+      },
+      {
+        "group": "post-quantum",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "post_quantum"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "classical",
+            "min_distinct_identities": 1
+          },
+          {
+            "group": "post-quantum",
+            "min_distinct_identities": 1
+          }
+        ],
+        "relations": [
+          {
+            "relation_id": "independent-signer-identities",
+            "attribute": "identity",
+            "mode": "distinct",
+            "groups": [
+              "classical",
+              "post-quantum"
+            ]
+          }
+        ]
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      },
+      {
+        "family": "lattice",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "release-ed",
+      "key_name": "release",
+      "signer_identity": "release-owner",
+      "algorithm": "ed25519",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "release-owner",
+      "custody_domain": "release-ed"
+    },
+    {
+      "key_id": "security-pq",
+      "key_name": "security",
+      "signer_identity": "security-owner",
+      "algorithm": "ml-dsa-65",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "security-owner",
+      "custody_domain": "security-pq"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "release-ed",
+        "signature_id": "ed-good",
+        "verification": "valid"
+      },
+      {
+        "key_id": "security-pq",
+        "signature_id": "pq-good",
+        "verification": "valid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "accept",
+    "satisfied_clause": "required",
+    "required_reason_codes": [],
+    "forbidden_reason_codes": [
+      "missing_required_group",
+      "missing_required_relation"
+    ],
+    "group_counts": {
+      "classical": 1,
+      "post-quantum": 1
+    }
+  },
+  "minimum_policy_epoch": 0
+}

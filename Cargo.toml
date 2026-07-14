@@ -3,7 +3,7 @@ name = "nix-pqc-cache-proxy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"
-description = "Prototype: hybrid Ed25519+ML-DSA-65 signing/verification for Nix binary caches, plus a local trust-translating reverse proxy"
+description = "Reference prototype for composable signature authorization on Nix binary-cache metadata"
 license = "AGPL-3.0-or-later"
 publish = false
 
@@ -11,27 +11,48 @@ publish = false
 name = "nix-pqc-cache-proxy"
 path = "src/main.rs"
 
+[[bin]]
+name = "artifact-attestation"
+path = "src/bin/artifact-attestation.rs"
+
+[[bin]]
+name = "policy-conformance"
+path = "src/bin/policy-conformance.rs"
+
+[[bin]]
+name = "policy-evidence"
+path = "src/bin/policy-evidence.rs"
+
+[[bin]]
+name = "trust-receipt"
+path = "src/bin/trust-receipt.rs"
+
+[[bin]]
+name = "trust-state"
+path = "src/bin/trust-state.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
 base64 = "0.22"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 ed25519-dalek = "2"
 # Pinned to match mycelix-crypto's own pin (this module was vendored from
 # there) -- not a hard requirement, just keeps the two in sync if either
 # gets bumped.
 ml-dsa = "=0.1.1"
 rand = "0.8"
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.8", features = ["html_reports"] }
-serde_json = "1"
 
 [[bench]]
 name = "pqc_bench"

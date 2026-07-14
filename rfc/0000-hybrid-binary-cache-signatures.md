@@ -8,20 +8,37 @@ shepherd-leader: (name to be appointed by RFC steering committee)
 related-issues: https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy
 ---
 
+> **Status note (updated 2026-07-14): historical transport draft, not the
+> current upstream recommendation.** DeterminateSystems/nix-src#449 already
+> implements ML-DSA and ECDSA algorithms through the ordinary Nix signature
+> machinery, and NixOS/nix#15926 extracts the multi-key-type abstraction for
+> upstream review. This project therefore does not claim first PQ signature
+> support for Nix, and a separate `Sig-PQC:` field is not necessary merely
+> for algorithm agility.
+>
+> The surviving research question is policy-semantic: ordinary any-valid
+> admission does not express a mandatory classical-and-post-quantum group.
+> This file is retained as the concrete transport experiment that exposed
+> that distinction. Current positioning, prior art, and the representation-
+> neutral policy model are maintained in `docs/PRIOR_ART.md`,
+> `docs/SIGNATURE_POLICY_MODEL.md`, and ADR 0001. See `rfc/README.md` for the
+> intended reading order.
+
 # Summary
 [summary]: #summary
 
-This RFC introduces an optional `Sig-PQC:` field for `.narinfo` files.
-Existing Nix clients ignore the new field and continue operating
-unchanged. PQC-aware clients may verify an ML-DSA-65 signature alongside
-the existing Ed25519 signature, allowing staged deployment of hybrid
-post-quantum trust without breaking compatibility.
+This historical draft explores an optional `Sig-PQC:` field for `.narinfo`
+files. Existing Nix clients ignore the new field and continue operating
+unchanged. A prototype-aware verifier can require the ML-DSA-65 entry
+alongside the existing Ed25519 signature.
 
-This RFC standardizes the **transport** of that hybrid signature — the
-field, its byte encoding, and how it pairs with the existing `Sig:` line.
-Whether a given cache signs with it, and whether a given client *requires*
-it, are enforcement-policy decisions this RFC deliberately leaves to
-implementations and operators, not to the wire format.
+The draft specifies one **transport adapter**: the field, byte encoding, and
+pairing rule. It should no longer be read as evidence that a new field is
+required for PQ algorithms, nor as the current policy proposal. The current
+project direction is to express authorization and migration semantics
+independently from transport, then map those cases onto ordinary
+algorithm-tagged signatures, this historical adapter, or an authoritative
+external verifier.
 
 ## Supporting prototype
 
@@ -50,15 +67,19 @@ that the referenced code never changes.
 [motivation]: #motivation
 
 Nix's supply-chain integrity splits into two independent cryptographic
-layers, and they age very differently under quantum attack:
+layers, and they age very differently under quantum attack. The statements
+below describe the classical Ed25519 deployment baseline that motivated the
+prototype; later Determinate Nix releases added experimental ML-DSA
+algorithm agility, as documented in Prior art.
 
 - **Store-path/NAR content hashing** uses SHA-256. Grover's algorithm gives
   only a quadratic speedup against a hash function's preimage resistance,
   so even the worst case (a fully truncated 160-bit store-path hash) still
   retains a large security margin. This layer does not need urgent
   attention.
-- **Binary-cache trust** is 100% classical: every `.narinfo`'s `Sig:` line
-  is an Ed25519 signature, and Ed25519's security rests entirely on the
+- **The traditional binary-cache trust baseline is classical:** ordinary
+  deployments historically use Ed25519 `Sig:` lines, and Ed25519's security
+  rests entirely on the
   hardness of the elliptic-curve discrete-log problem — which Shor's
   algorithm solves outright given a cryptographically-relevant quantum
   computer (CRQC). Unlike encrypted data, there is no "harvest now, decrypt
@@ -68,16 +89,15 @@ layers, and they age very differently under quantum attack:
   a `Sig:` line for arbitrary content, retroactively and going forward,
   for every binary cache whose trust still rests on that key.
 
-Nix has **no migration path today**. `SecretKey`/`PublicKey`/`Signature`
-(`src/libutil/signature/local-keys.cc`) are concrete structs that call
-libsodium's `crypto_sign_*` functions directly — there is no algorithm
-field, no dispatch, nothing to extend. The one genuinely positive sign is
-that `Signer` (`src/libutil/signature/signer.hh`, `signer.cc`) is already
-an abstract interface — `LocalSigner` is its only concrete implementation
-today, but the shape for a second implementation already exists on the
-*signing* side. There is no equivalent on the *verification* side
-(`PublicKey::verifyDetachedAnon`, the free function `verifyDetached()`):
-both are hardcoded to `crypto_sign_verify_detached`.
+At the source snapshot originally reviewed for this draft,
+`SecretKey`/`PublicKey`/`Signature` were concrete Ed25519/libsodium types.
+That statement is now historical rather than a claim about the complete
+2026 ecosystem. DeterminateSystems/nix-src#449 subsequently shipped
+polymorphic key types with ECDSA P-384 and ML-DSA-44/65/87, and NixOS/nix
+PR #15926 extracted the key-type abstraction for upstream review. This
+solves algorithm dispatch, but it does not by itself solve mandatory hybrid
+policy: ordinary trust remains satisfied when any accepted trusted
+signature verifies.
 
 The case for acting now, well before any CRQC exists, is migration lead
 time: cache signing keys and client `trusted-public-keys` configuration are
@@ -168,10 +188,11 @@ vectors.
 
 ## Why an additional field, not a change to `Signature`
 
-`Signature { keyName, sig }` (`local-keys.cc`) is a flat opaque byte blob
-with no algorithm field, stored in a `std::set<Signature>` on
-`ValidPathInfo`/`UnkeyedNarInfo`. The trust decision itself is a simple
-any-of-N-keys OR, not a threshold or composite scheme:
+In the source snapshot that motivated this draft, `Signature { keyName,
+sig }` was a flat opaque byte blob with no algorithm field. Later key-type
+work demonstrates that this representation can be generalized. The trust
+decision shown below remains the more important distinction: it is an
+any-of-N-signatures OR, not a threshold or required composite group:
 
 ```cpp
 // src/libstore/path-info.cc
@@ -188,15 +209,16 @@ bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info) {
 }
 ```
 
-There is no concept anywhere in this path of "these two signatures must
-both hold as one unit." Retrofitting AND-composition into the *existing*
-`Sig:`/`Signature` machinery would touch: the SQLite schema and queries
-backing `LocalStore`'s path-info table, `toJSON`/`fromJSON` for three JSON
-format versions, `checkSignatures`/`checkSignature`, `verifyDetached`, and
-every external consumer of `PublicKeys`/`Signature`. That is a large,
-high-blast-radius change for what should be an opt-in extension.
+There is no concept in this path of "these two signatures must both hold
+as one unit." The original draft chose a parallel field to prototype that
+composition without redesigning existing signature objects. After the
+algorithm-agility prior art, this should be treated as one concrete option,
+not proof that a new field is required. A generalized policy layer over
+algorithm-tagged ordinary signatures may be cleaner, especially if it also
+handles thresholds, rotation, revocation, and attestations.
 
-A parallel field avoids essentially all of it. The `.narinfo` text-format
+The parallel-field option does retain one compatibility advantage. The
+`.narinfo` text-format
 parser (`NarInfo::NarInfo(...)` in `src/libstore/nar-info.cc`, which
 constructs into a `ValidPathInfo`-derived object) is a plain
 `if (name == "...") ... else if (...)` chain with **no catch-all error
@@ -205,12 +227,18 @@ directly from source. This is precisely what makes `Sig-PQC:` free:
 existing `nix` versions require zero code changes to remain fully
 functional and fully compatible with a dual-signed narinfo.
 
-## Verification policy (not part of the wire format)
+## Historical verification policy and current reframing
 
-Everything above is the format specification: what `Sig-PQC:` contains and
-how it pairs with `Sig:`. What follows — whether a given signature check
-requires the hybrid half at all — is implementation/operator policy, kept
-deliberately separate so it can evolve without reopening the format.
+Everything above describes the historical adapter: what `Sig-PQC:` contains
+and how it pairs with `Sig:`. The table below records the prototype’s narrow
+policy behavior and remains useful as a conformance case.
+
+Prior-art review changed the architectural conclusion. Policy is now the
+primary research object, not an implementation detail subordinate to this
+wire format. The representation-neutral model separates encoding,
+cryptographic verification, trust, authorization policy, migration, and
+evidence. A future implementation may enforce the same table over ordinary
+algorithm-tagged signatures without using `Sig-PQC:` at all.
 
 A "hybrid check" for a given `keyname` is: find the same-`keyname` `Sig:`
 line, find the same-`keyname` `Sig-PQC:` line, and require **both** to
@@ -373,20 +401,19 @@ exactly one PQC algorithm," which is all this RFC proposes.
   Ed25519's decade-plus track record. The RustCrypto-backed hybrid
   construction the prototype uses for both algorithms is explicitly
   unaudited experimental code, not production-grade.
-- **No existing PQC dependency** in Nix's C++ implementation — `local-keys.cc`
-  depends on libsodium directly for Ed25519, and there is no `liboqs` or
-  equivalent already vendored. A real (non-prototype) C++ implementation
-  needs a new native dependency; `tvix` (the Rust reimplementation) can
-  likely reach pure-Rust ML-DSA crates without that cost — see Unresolved
-  questions.
+- **A production PQC backend adds native cryptographic dependency and
+  maintenance cost.** Determinate's implementation demonstrates one viable
+  C++ route through OpenSSL's CNSA algorithms; a Rust implementation could
+  instead use a suitable pure-Rust crate. The original draft's claim that
+  `liboqs` was necessarily required is obsolete.
 - **Roughly doubles narinfo signature-check cost** — measured from the
   prototype's benchmark: ML-DSA-65 sign ~1.04ms, verify ~523µs (versus
   Ed25519's typical sub-100µs). Negligible per individual fetch against
   network I/O, but non-trivial at cache-population or CI scale doing
   millions of verifications.
-- **Ongoing maintenance of a new PQC dependency has no named owner.**
-  Whichever of `liboqs` (`cppnix`) or a pure-Rust ML-DSA crate (`tvix`)
-  gets used, someone needs to track NIST parameter updates, patch CVEs in
+- **Ongoing maintenance of the PQC backend has no named owner for this
+  proposal.** Whether the implementation uses OpenSSL or a pure-Rust ML-DSA
+  crate, someone needs to track NIST parameter updates, patch CVEs in
   that dependency, and keep it building as Nix's own toolchain moves.
   This RFC does not currently name a long-term maintainer. This matches
   this repository's own documented norm rather than being a special gap
@@ -448,43 +475,65 @@ exactly one PQC algorithm," which is all this RFC proposes.
 # Prior art
 [prior-art]: #prior-art
 
-- TLS 1.3's hybrid key-exchange deployments (e.g. X25519+ML-KEM composite
-  key agreement, already shipping in some stacks) follow the same
-  "require both, break neither" philosophy this proposal borrows for
-  signatures rather than key exchange.
-- The RustCrypto-backed hybrid Ed25519+ML-DSA-65 construction this
-  proposal's prototype uses originates from unrelated work in the same
-  monorepo (a decentralized-trust protocol's own binary/credential
-  signing) that independently arrived at the identical hybrid pattern —
-  suggestive that this is a convergent design choice, not an idiosyncratic
-  one, though it is not independent published prior art in the
-  traditional sense.
-- This RFC's author has not exhaustively searched existing `NixOS/nix`
-  issues or Discourse threads for prior PQC-specific discussion; whoever
-  carries this RFC forward should do that search and summarize findings
-  here before requesting shepherds.
+Status reviewed: 2026-07-14. The detailed comparison and update discipline
+live in `docs/PRIOR_ART.md`; this section is intentionally concise.
+
+- **[DeterminateSystems/nix-src#449](https://github.com/DeterminateSystems/nix-src/pull/449).**
+  Merged 2026-05-20. It implements `ecdsa-p384`, `ml-dsa-44`, `ml-dsa-65`,
+  and `ml-dsa-87` store-path signing through polymorphic key types in the
+  ordinary signature machinery. This is direct prior art for algorithm
+  agility and invalidates the original draft’s assumption that a parallel
+  narinfo field was required merely to carry a PQ algorithm.
+- **[NixOS/nix#15926](https://github.com/NixOS/nix/pull/15926).** Open at the
+  review date. Eelco Dolstra extracted the multi-key-type abstraction from
+  the Determinate work for upstream review. The reviewed PR establishes the
+  abstraction first; it should not be described as though the complete
+  Determinate algorithm set were already merged upstream.
+- **[NixOS/nix#14451](https://github.com/NixOS/nix/issues/14451),
+  `trusted-signatures-command`.** Open proposal for an external verification
+  hook motivated by rotation, certificate chains, revocation, thresholds,
+  and attestations. The proposal suggests permissive OR fallback between the
+  built-in keys and the external command. That is useful for migration, but
+  a mandatory hybrid deployment needs an authoritative mode that cannot be
+  bypassed by a classical success.
+- **[NixOS/rfcs#202](https://github.com/NixOS/rfcs/pull/202).** The public RFC
+  discussion contains both the original `Sig-PQC:` proposal and the later
+  reframing: reuse ordinary signatures where possible, specify required
+  groups and migration states, count distinct trusted identities, and test
+  downgrade cases.
+- TLS hybrid key-exchange deployments follow a related “break neither”
+  migration philosophy, although key exchange and artifact-signature
+  authorization have different threat models and policy requirements.
+- The RustCrypto-backed hybrid construction in this repository originated in
+  unrelated work by the same author. It is implementation reuse, not
+  independent published prior art or a cryptographic audit.
+
+The correct relationship is complementary: Determinate advances encoding
+and cryptographic verification; this prototype investigates composed
+authorization and migration. A future design can use both.
 
 # Unresolved questions
 [unresolved]: #unresolved-questions
 
-- Exact field name and byte-level wire format — `Sig-PQC:` and the tagged
-  encoding above are this proposal's concrete starting point (implemented,
-  tested, and vectored in the prototype), not a settled spec.
-- **C++ (`cppnix`) vs Rust (`tvix`) as the first implementation target.**
-  `tvix` likely has a much lower-friction path to a working implementation
-  via pure-Rust ML-DSA crates, avoiding a new C library dependency
-  entirely; `cppnix` needs `liboqs` or equivalent. Prototyping against
-  `tvix` first, then porting the wire-format learnings back to `cppnix`,
-  may be the pragmatic order.
-- Independent key rotation for the PQC half versus always-paired-with-Ed25519.
-- Whether `nix-store --generate-binary-cache-key` should grow a flag to
-  produce hybrid keypairs by default going forward, or remain opt-in.
-- How a hybrid `Sig-PQC:` entry should interact with `nix store verify
-  --sigs-needed N`'s existing threshold counter — does one hybrid
-  signature count as one toward that threshold, or does hybrid trust need
-  its own independent counter?
-- A real storage/bandwidth projection at `cache.nixos.org`'s actual scale,
-  which requires access this RFC's author doesn't have.
+ADR 0001 resolves one project-level question: future conformance cases will
+be representation-neutral, and `Sig-PQC:` will be treated as an adapter
+rather than the required upstream transport. The remaining questions are:
+
+- Where authoritative policy should execute: inside Nix admission, through
+  an external verifier with no permissive fallback, at a cache gateway, or
+  in more than one layer with clearly defined precedence.
+- How required groups, distinct signer thresholds, validity intervals, and
+  migration states should be represented consistently across cppnix, tvix,
+  cache servers, and offline verifiers.
+- Whether algorithm family is sufficient for grouping, or whether policy
+  must bind explicit key roles such as `release`, `security`, and `builder`.
+- How independent classical and PQ key rotation interacts with paired cache
+  identities and existing `trusted-public-keys` deployments.
+- How group requirements should interact with `nix store verify
+  --sigs-needed N`: separate counters, one generalized policy result, or a
+  compatibility translation.
+- How revocation should affect artifacts already admitted to a local store.
+- A real storage and bandwidth projection at `cache.nixos.org` scale.
 
 # Future work
 [future]: #future-work
@@ -494,16 +543,17 @@ exactly one PQC algorithm," which is all this RFC proposes.
   found alongside `ValidPathInfo::checkSignatures` during research for this
   RFC — extending the same hybrid pattern there is a natural follow-up,
   out of scope here.
-- Adding a `liboqs` (or, for `tvix`, a chosen pure-Rust crate set) build
-  dependency is a prerequisite for turning this from a design into a real
-  implementation.
+- Evaluating the available production backends (including the OpenSSL path
+  demonstrated by Determinate Nix and suitable pure-Rust implementations)
+  for auditability, portability, deterministic signing behavior, and
+  long-term maintenance.
 - Eventually deprecating classical-only trust once ML-DSA has more
   real-world track record is explicitly **not** proposed here — this RFC
   is additive only.
-- Standardizing this wire-format extension across the broader
-  narinfo-speaking ecosystem (`attic`, `Cachix`, and other third-party
-  binary caches) so PQC-signed caches interoperate beyond just
-  `cppnix`/`tvix`.
+- Publishing representation-neutral policy vectors plus adapters for this
+  historical field, ordinary algorithm-tagged signatures, and independent
+  verifiers so cppnix, tvix, Attic, Cachix, and other implementations can
+  test the same authorization semantics without adopting one wire format.
 - Publishing the `test-vectors/` suite somewhere durable and versioned
   (rather than living inside this prototype) once the format itself is
   no longer expected to change, so independent implementations have a

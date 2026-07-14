@@ -109,6 +109,29 @@ fn write_fingerprint_vectors(dir: &Path) {
          fingerprint, not trust the narinfo text's order.",
         &shuffled,
     );
+
+    let duplicated = NarInfo {
+        references: vec![
+            "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66".to_string(),
+            "00zrahbb32nzawrmv9sjxn36h7qk9vrs-bash-5.2p37".to_string(),
+            "q4wq65gl3r8fy746v9bbwgx4gzn0r2kl-glibc-2.40-66".to_string(),
+        ],
+        ..sample_narinfo()
+    };
+    assert_eq!(
+        canonical_fp,
+        duplicated.fingerprint().unwrap(),
+        "duplicate references must collapse to StorePathSet semantics"
+    );
+    write_fingerprint_vector(
+        dir,
+        "fingerprint-004-duplicate-references",
+        "Same logical reference set as fingerprint-001, but one reference \
+         is repeated and the input order is shuffled. A conformant \
+         implementation must model Nix's StorePathSet semantics: sort and \
+         deduplicate before fingerprinting.",
+        &duplicated,
+    );
 }
 
 fn write_fingerprint_vector(dir: &Path, name: &str, description: &str, info: &NarInfo) {

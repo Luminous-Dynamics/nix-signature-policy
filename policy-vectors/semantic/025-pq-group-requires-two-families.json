@@ -1,0 +1,125 @@
+{
+  "schema_version": 2,
+  "case_id": "pq-group-requires-two-families",
+  "description": "Two PQ signatures from independently structured families satisfy a family-diversity threshold.",
+  "tags": [
+    "family-diversity",
+    "post-quantum"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "typed-policy",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      },
+      {
+        "algorithm": "ml-dsa-65",
+        "family": "lattice",
+        "assurance_class": "post_quantum"
+      },
+      {
+        "algorithm": "slh-dsa-128s",
+        "family": "hash_based",
+        "assurance_class": "post_quantum"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "post-quantum",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "post_quantum"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "post-quantum",
+            "min_distinct_identities": 2,
+            "min_distinct_families": 2
+          }
+        ],
+        "relations": []
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      },
+      {
+        "family": "lattice",
+        "status": "enabled"
+      },
+      {
+        "family": "hash_based",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "lattice",
+      "key_name": "lattice-cache",
+      "signer_identity": "owner-a",
+      "algorithm": "ml-dsa-65",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "owner-a",
+      "custody_domain": "lattice"
+    },
+    {
+      "key_id": "hash",
+      "key_name": "hash-cache",
+      "signer_identity": "owner-b",
+      "algorithm": "slh-dsa-128s",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "owner-b",
+      "custody_domain": "hash"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "lattice",
+        "signature_id": "lattice-good",
+        "verification": "valid"
+      },
+      {
+        "key_id": "hash",
+        "signature_id": "hash-good",
+        "verification": "valid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "accept",
+    "satisfied_clause": "required",
+    "required_reason_codes": [],
+    "forbidden_reason_codes": [
+      "missing_required_group"
+    ],
+    "group_counts": {
+      "post-quantum": 2
+    }
+  },
+  "minimum_policy_epoch": 0
+}

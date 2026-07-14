@@ -1,0 +1,247 @@
+{
+  "bundle_schema_version": 1,
+  "payload_sha256": "8c81a1a5f4549da7da165d66f889d482f31103eafd185bc0ac156f61b2b86f60",
+  "payload": {
+    "schema_version": 1,
+    "assurance": "policy_replay",
+    "producer": {
+      "implementation": "nix-pqc-cache-proxy",
+      "version": "0.1.0"
+    },
+    "source": {
+      "kind": "policy_conformance_vector",
+      "identifier": "policy-vectors/adapter-parity/semantic-hybrid-valid.json",
+      "sha256": "3c3885bdbcf506d6d1c318ec0f27e0856aa309b43ee3f18463ba9d8d27b3aabb",
+      "size_bytes": 3019,
+      "adapter": "semantic"
+    },
+    "evaluation_time": 100,
+    "minimum_policy_epoch": 0,
+    "policy": {
+      "policy_id": "hybrid-required",
+      "version": 1,
+      "epoch": 1,
+      "previous_policy_hash": null,
+      "active_from": null,
+      "expires_at": null,
+      "max_signature_observations": 128,
+      "max_signature_candidates": 32,
+      "family_registry": [
+        {
+          "family": "elliptic_curve",
+          "status": "enabled"
+        },
+        {
+          "family": "lattice",
+          "status": "enabled"
+        }
+      ],
+      "algorithm_registry": [
+        {
+          "algorithm": "ed25519",
+          "family": "elliptic_curve",
+          "assurance_class": "classical"
+        },
+        {
+          "algorithm": "ml-dsa-65",
+          "family": "lattice",
+          "assurance_class": "post_quantum"
+        }
+      ],
+      "group_definitions": [
+        {
+          "group": "classical",
+          "predicate": {
+            "match_all": false,
+            "allowed_algorithms": [],
+            "allowed_families": [],
+            "allowed_assurance_classes": [
+              "classical"
+            ],
+            "required_roles": [],
+            "allowed_authorities": [],
+            "allowed_custody_domains": []
+          }
+        },
+        {
+          "group": "post-quantum",
+          "predicate": {
+            "match_all": false,
+            "allowed_algorithms": [],
+            "allowed_families": [],
+            "allowed_assurance_classes": [
+              "post_quantum"
+            ],
+            "required_roles": [],
+            "allowed_authorities": [],
+            "allowed_custody_domains": []
+          }
+        }
+      ],
+      "accept_if_any": [
+        {
+          "clause_id": "required",
+          "required_groups": [
+            {
+              "group": "classical",
+              "min_distinct_identities": 1,
+              "min_distinct_families": 0,
+              "min_distinct_authorities": 0,
+              "min_distinct_custody_domains": 0
+            },
+            {
+              "group": "post-quantum",
+              "min_distinct_identities": 1,
+              "min_distinct_families": 0,
+              "min_distinct_authorities": 0,
+              "min_distinct_custody_domains": 0
+            }
+          ],
+          "relations": [
+            {
+              "relation_id": "same-signer-identity",
+              "attribute": "identity",
+              "mode": "same",
+              "groups": [
+                "classical",
+                "post-quantum"
+              ]
+            }
+          ],
+          "active_from": null,
+          "active_until": null
+        }
+      ]
+    },
+    "trusted_keys": [
+      {
+        "key_id": "cache-ed",
+        "key_name": "cache",
+        "signer_identity": "cache-owner",
+        "algorithm": "ed25519",
+        "roles": [
+          "cache-signing"
+        ],
+        "authority": "cache-owner",
+        "custody_domain": "cache-ed",
+        "revoked": false,
+        "valid_from": null,
+        "valid_until": null
+      },
+      {
+        "key_id": "cache-pq",
+        "key_name": "cache",
+        "signer_identity": "cache-owner",
+        "algorithm": "ml-dsa-65",
+        "roles": [
+          "cache-signing"
+        ],
+        "authority": "cache-owner",
+        "custody_domain": "cache-pq",
+        "revoked": false,
+        "valid_from": null,
+        "valid_until": null
+      }
+    ],
+    "candidates": [
+      {
+        "key_name": "cache",
+        "algorithm": "ed25519",
+        "signature_id": "ed-good",
+        "verification": "valid"
+      },
+      {
+        "key_name": "cache",
+        "algorithm": "ml-dsa-65",
+        "signature_id": "pq-good",
+        "verification": "valid"
+      }
+    ],
+    "decision": {
+      "decision": "accept",
+      "policy_id": "hybrid-required",
+      "policy_version": 1,
+      "policy_epoch": 1,
+      "satisfied_clause": "required",
+      "raw_candidate_count": 2,
+      "unique_candidate_count": 2,
+      "eligible_candidate_count": 2,
+      "reason_codes": [],
+      "candidate_diagnostics": [],
+      "clause_evaluations": [
+        {
+          "clause_id": "required",
+          "active": true,
+          "satisfied": true,
+          "groups": [
+            {
+              "group": "classical",
+              "required_identities": 1,
+              "observed_identities": 1,
+              "signer_identities": [
+                "cache-owner"
+              ],
+              "required_families": 0,
+              "observed_families": 1,
+              "families": [
+                "elliptic_curve"
+              ],
+              "required_authorities": 0,
+              "observed_authorities": 1,
+              "authorities": [
+                "cache-owner"
+              ],
+              "required_custody_domains": 0,
+              "observed_custody_domains": 1,
+              "custody_domains": [
+                "cache-ed"
+              ]
+            },
+            {
+              "group": "post-quantum",
+              "required_identities": 1,
+              "observed_identities": 1,
+              "signer_identities": [
+                "cache-owner"
+              ],
+              "required_families": 0,
+              "observed_families": 1,
+              "families": [
+                "lattice"
+              ],
+              "required_authorities": 0,
+              "observed_authorities": 1,
+              "authorities": [
+                "cache-owner"
+              ],
+              "required_custody_domains": 0,
+              "observed_custody_domains": 1,
+              "custody_domains": [
+                "cache-pq"
+              ]
+            }
+          ],
+          "relations": [
+            {
+              "relation_id": "same-signer-identity",
+              "attribute": "identity",
+              "mode": "same",
+              "satisfied": true,
+              "witnesses": [
+                {
+                  "group": "classical",
+                  "value": "cache-owner"
+                },
+                {
+                  "group": "post-quantum",
+                  "value": "cache-owner"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "attestation": null
+}

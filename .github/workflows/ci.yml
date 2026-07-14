@@ -6,112 +6,101 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  RUSTFLAGS: -D warnings
-  RUSTDOCFLAGS: -D warnings
-
 jobs:
-  fmt:
-    name: Format Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --locked -- -D warnings
-
-  test:
-    name: Test
+  flake-check:
+    name: Nix flake check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Hermetic suite only (45 tests: unit + proxy_e2e + test_vectors).
-      # tests/real_nix_e2e.rs is #[ignore]d here and run in its own job below.
-      - run: cargo test --locked
-
-  build-benches-and-examples:
-    name: Build benches + examples
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # `cargo test`/`cargo build` alone never compile benches/ or examples/.
-      # This exists specifically to catch that class of bug: an earlier
-      # commit had a bench that didn't type-check (encode_sig_pqc expects
-      # &[u8], was passed a whole HybridSignature) and nothing caught it
-      # until a manual `cargo check --benches` run.
-      - run: cargo check --benches --examples --locked
-
-  msrv:
-    name: MSRV (Rust 1.86, edition 2024 floor)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.86
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-targets --locked
-
-  docs:
-    name: Docs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --locked
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Pinned to the same installer revision used by the existing real-Nix
+      # proof. The flake itself supplies the exact Rust compiler and crates.
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
+      - run: nix flake check --print-build-logs
 
   real-nix-e2e:
-    name: Real Nix end-to-end proof
+    name: Real Nix proof (${{ matrix.nix-line }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nix-line: [stable, latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
+      # Each app places the selected Nix CLI first on PATH and supplies a
+      # prebuilt hello store path from the locked nixpkgs input. This avoids
+      # relying on the runner's registry state or resolving nixpkgs#hello over
+      # the network during the test.
+      - run: nix run .#real-nix-e2e-${{ matrix.nix-line }}
+
+  stable-rust-forward-compat:
+    name: Current stable Rust forward compatibility
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # pinned master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # rust-toolchain.toml pins the normal repository toolchain; +stable is
+      # deliberate here so this lane detects future compiler incompatibility.
+      - run: cargo +stable clippy --all-targets --locked -- -D warnings
+      - run: cargo +stable test --locked
+
+  fuzz-smoke:
+    name: Bounded fuzz smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Pinned to main's HEAD as of 2026-07-12 (v22 tag exists but is older
-      # than main); update the SHA deliberately, don't float on @main.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
-      # This is the actual claim the README/RFC make: a real, unmodified
-      # `nix` trusts a hybrid-resigned narinfo through our real proxy, via
-      # `nix store verify` (not just our own crypto self-checks). Builds
-      # nixpkgs#hello for real, so this job is slower than the others.
-      - run: cargo test --locked --test real_nix_e2e -- --ignored --nocapture
+      # Five short campaigns catch panics and invariant violations without
+      # turning pull-request CI into an unbounded fuzzing service.
+      - run: nix run .#fuzz-smoke
 
   audit:
-    name: Security Audit
+    name: Locked dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-audit --locked
-      # This crate is explicitly unaudited/experimental crypto (see
-      # README), but its *dependencies* (axum, reqwest, tokio, ed25519-dalek,
-      # ml-dsa, ...) should still be watched for known advisories.
-      # (`--locked` is a cargo-build flag; cargo-audit doesn't accept it --
-      # it reads Cargo.lock directly.)
-      - run: cargo audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
+      - run: nix run .#audit
+
+  maintainer-demo:
+    name: Maintainer real-Nix demonstration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
+      - run: nix run .#demo -- --out-dir demo-output
+
+  release-reproducibility:
+    name: Deterministic source release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: DeterminateSystems/nix-installer-action@a7ad9c4f0c65208097f4d34f3cfa1913b80cce5c
+      - name: Build twice and compare
+        run: |
+          set -euo pipefail
+          nix run .#release-source -- --out-dir dist-a
+          nix run .#release-source -- --out-dir dist-b
+          diff -ru dist-a dist-b
+          release_statement="$(find dist-a -maxdepth 1 -type f -name '*.release.json' -print -quit)"
+          test -n "$release_statement"
+          nix run .#verify-release -- "$release_statement"

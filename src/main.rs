@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -43,10 +44,11 @@ enum Command {
         /// Base64 Ed25519 public key to check classical Sig: lines against
         #[arg(long)]
         pubkey: Option<String>,
-        /// Path to a .pub file (from keygen) to check Sig-PQC: lines against
+        /// Path to a .pub file (from keygen). Supplying this requires a valid
+        /// same-keyname Ed25519+ML-DSA hybrid signature.
         #[arg(long)]
         pqc_pubkey: Option<PathBuf>,
-        /// Fail if no valid Sig-PQC is found, even if the classical Sig is fine
+        /// Require hybrid verification. This flag also requires --pqc-pubkey.
         #[arg(long)]
         require_pqc: bool,
     },
@@ -64,6 +66,27 @@ enum Command {
         /// Address to listen on
         #[arg(long, default_value = "127.0.0.1:8443")]
         listen: String,
+        /// Maximum admitted handlers/streams before bounded queueing begins.
+        #[arg(long, default_value_t = 128)]
+        max_in_flight: usize,
+        /// Maximum queue wait before returning 503 Service Unavailable.
+        #[arg(long, default_value_t = 1_000)]
+        queue_timeout_ms: u64,
+        /// Upstream TCP/TLS connection deadline.
+        #[arg(long, default_value_t = 10)]
+        connect_timeout_secs: u64,
+        /// Whole-request deadline for small metadata responses.
+        #[arg(long, default_value_t = 30)]
+        metadata_timeout_secs: u64,
+        /// Deadline for upstream NAR response headers.
+        #[arg(long, default_value_t = 30)]
+        nar_header_timeout_secs: u64,
+        /// Maximum idle interval between streamed NAR chunks.
+        #[arg(long, default_value_t = 30)]
+        nar_idle_timeout_secs: u64,
+        /// Optional maximum NAR body size in bytes; omitted means unlimited.
+        #[arg(long)]
+        max_nar_bytes: Option<u64>,
     },
 }
 
@@ -89,7 +112,25 @@ async fn main() -> Result<()> {
             upstream_pubkey,
             key,
             listen,
-        } => proxy::run(upstream, upstream_pubkey, key, listen).await,
+            max_in_flight,
+            queue_timeout_ms,
+            connect_timeout_secs,
+            metadata_timeout_secs,
+            nar_header_timeout_secs,
+            nar_idle_timeout_secs,
+            max_nar_bytes,
+        } => {
+            let config = proxy::ProxyConfig {
+                max_in_flight,
+                queue_timeout: Duration::from_millis(queue_timeout_ms),
+                connect_timeout: Duration::from_secs(connect_timeout_secs),
+                metadata_total_timeout: Duration::from_secs(metadata_timeout_secs),
+                nar_header_timeout: Duration::from_secs(nar_header_timeout_secs),
+                nar_chunk_idle_timeout: Duration::from_secs(nar_idle_timeout_secs),
+                max_nar_bytes,
+            };
+            proxy::run_with_config(upstream, upstream_pubkey, key, listen, config).await
+        }
     }
 }
 
@@ -133,20 +174,17 @@ fn cmd_sign(cache_dir: &Path, key_path: &Path) -> Result<()> {
         let fingerprint = info.fingerprint()?;
         let sig = secret.signer.sign(fingerprint.as_bytes());
 
-        // Re-signing an already-signed narinfo must REPLACE this key's prior
-        // entries, not accumulate duplicates alongside them -- `sign` is
-        // meant to be safely re-runnable on the same cache dir.
-        let prefix = format!("{}:", secret.name);
-        info.sigs.retain(|s| !s.starts_with(&prefix));
-        info.sig_pqc.retain(|s| !s.starts_with(&prefix));
-
-        // Classical Sig:, signed with the SAME Ed25519 half — ordinary `nix`
-        // stays fully backward compatible and needs no awareness of Sig-PQC.
+        // Classical Sig: is signed with the SAME Ed25519 half — ordinary
+        // `nix` stays fully backward compatible and needs no awareness of
+        // Sig-PQC. The shared replacement helper makes repeated signing
+        // idempotent across both the CLI and proxy paths.
         let ed_b64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig.ed25519);
-        info.sigs.push(format!("{}:{}", secret.name, ed_b64));
-        info.sig_pqc
-            .push(keys::encode_sig_pqc(&secret.name, &sig.ml_dsa));
+        info.replace_signature_pair(
+            &secret.name,
+            format!("{}:{}", secret.name, ed_b64),
+            keys::encode_sig_pqc(&secret.name, &sig.ml_dsa),
+        )?;
 
         keys::write_atomic_overwrite(&path, &info.to_text())?;
         count += 1;
@@ -174,6 +212,10 @@ fn cmd_verify(
         );
     }
 
+    if require_pqc && pqc_pubkey_path.is_none() {
+        bail!("--require-pqc requires --pqc-pubkey so a hybrid key is available");
+    }
+
     let text = std::fs::read_to_string(narinfo_path)?;
     let info = NarInfo::parse(&text)?;
     let fingerprint = info.fingerprint()?;
@@ -186,36 +228,94 @@ fn cmd_verify(
                  (not enforcing key-name identity, unlike real Nix's trusted-public-keys)"
             );
         }
-        let ok = info.sigs.iter().any(|s| {
-            narinfo::verify_ed25519_sig(&fingerprint, s, expected_name, pubkey_b64).is_ok()
-        });
-        if !ok {
-            bail!("no Sig: line verified against the given classical public key");
-        }
+        narinfo::verify_any_ed25519_sig(&fingerprint, &info.sigs, expected_name, pubkey_b64)
+            .context("classical Ed25519 verification failed")?;
         println!("classical Ed25519 Sig: OK");
     }
 
-    let mut pqc_ok = false;
     if let Some(pqc_pubkey_path) = pqc_pubkey_path {
         let pk = PublicKey::load(pqc_pubkey_path)?;
-        // Uses the loaded key's OWN name as the expected keyname -- not
-        // whatever name a Sig-PQC: entry happens to claim -- matching real
-        // Nix's name-first trusted-key lookup rather than trusting
-        // attacker-controlled narinfo text to say which key it's using.
-        pqc_ok = keys::verify_hybrid(&info, &fingerprint, &pk.name, &pk.keys).is_ok();
-        if pqc_ok {
-            println!("hybrid Sig-PQC (Ed25519+ML-DSA-65): OK");
-        } else if require_pqc || !info.sig_pqc.is_empty() {
-            bail!(
-                "no Sig-PQC: line verified against the given hybrid public key (name {:?})",
+        // Supplying a hybrid key is an explicit verification request, not an
+        // opportunistic hint: a missing or invalid Sig-PQC must fail even when
+        // --require-pqc was omitted. Otherwise `verify --pqc-pubkey ...`
+        // could exit 0 without authenticating anything.
+        keys::verify_hybrid(&info, &fingerprint, &pk.name, &pk.keys).with_context(|| {
+            format!(
+                "hybrid Sig-PQC verification failed for configured key {:?}",
                 pk.name
-            );
-        }
-    }
-
-    if require_pqc && !pqc_ok {
-        bail!("--require-pqc set but no valid Sig-PQC was found");
+            )
+        })?;
+        println!("hybrid Sig-PQC (Ed25519+ML-DSA-65): OK");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use tempfile::tempdir;
+
+    fn unsigned_info() -> NarInfo {
+        NarInfo {
+            store_path: "/nix/store/00000000000000000000000000000000-demo".to_string(),
+            url: "nar/demo.nar".to_string(),
+            compression: "none".to_string(),
+            nar_hash: "sha256:0000000000000000000000000000000000000000000000000000".to_string(),
+            nar_size: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn verify_with_pqc_key_fails_when_hybrid_signature_is_missing() {
+        let dir = tempdir().unwrap();
+        let narinfo_path = dir.path().join("demo.narinfo");
+        let key_path = dir.path().join("demo.pub");
+        let key = SecretKey::generate("demo-1");
+        key.public().save(&key_path).unwrap();
+        std::fs::write(&narinfo_path, unsigned_info().to_text()).unwrap();
+
+        let err = cmd_verify(&narinfo_path, None, Some(&key_path), false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("hybrid Sig-PQC verification failed")
+        );
+    }
+
+    #[test]
+    fn require_pqc_without_a_hybrid_key_is_rejected() {
+        let dir = tempdir().unwrap();
+        let narinfo_path = dir.path().join("demo.narinfo");
+        std::fs::write(&narinfo_path, unsigned_info().to_text()).unwrap();
+
+        let err = cmd_verify(&narinfo_path, Some("AAAA"), None, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--require-pqc requires --pqc-pubkey")
+        );
+    }
+
+    #[test]
+    fn explicit_hybrid_verification_succeeds_only_with_both_halves() {
+        let dir = tempdir().unwrap();
+        let narinfo_path = dir.path().join("demo.narinfo");
+        let key_path = dir.path().join("demo.pub");
+        let key = SecretKey::generate("demo-1");
+        key.public().save(&key_path).unwrap();
+
+        let mut info = unsigned_info();
+        let fingerprint = info.fingerprint().unwrap();
+        let sig = key.signer.sign(fingerprint.as_bytes());
+        info.sigs.push(format!(
+            "demo-1:{}",
+            base64::engine::general_purpose::STANDARD.encode(sig.ed25519)
+        ));
+        info.sig_pqc
+            .push(keys::encode_sig_pqc("demo-1", &sig.ml_dsa));
+        std::fs::write(&narinfo_path, info.to_text()).unwrap();
+
+        cmd_verify(&narinfo_path, None, Some(&key_path), false).unwrap();
+    }
 }

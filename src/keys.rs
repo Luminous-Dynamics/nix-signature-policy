@@ -19,6 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
+use rand::RngCore;
 
 use crate::hybrid::{
     self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSigner, HybridVerifyingKeys,
@@ -44,7 +45,9 @@ impl SecretKey {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let body = format!("{}\n{}\n", self.name, B64.encode(self.signer.to_bytes()));
+        let mut secret_bytes = self.signer.to_bytes();
+        let body = format!("{}\n{}\n", self.name, B64.encode(&secret_bytes));
+        secret_bytes.fill(0);
         write_new_atomic(path, &body, true)
     }
 
@@ -60,9 +63,14 @@ impl SecretKey {
         let b64 = lines
             .next()
             .ok_or_else(|| anyhow!("secret key file missing key material line"))?;
-        let bytes = B64.decode(b64).context("base64 decode secret key")?;
-        let signer =
-            HybridSigner::from_bytes(&bytes).map_err(|e| anyhow!("bad secret key: {e}"))?;
+        if let Some(extra) = lines.next() {
+            bail!("secret key file contains an unexpected extra line: {extra:?}");
+        }
+        let mut bytes = B64.decode(b64).context("base64 decode secret key")?;
+        let signer_result =
+            HybridSigner::from_bytes(&bytes).map_err(|e| anyhow!("bad secret key: {e}"));
+        bytes.fill(0);
+        let signer = signer_result?;
         Ok(Self { name, signer })
     }
 
@@ -80,6 +88,7 @@ impl SecretKey {
 /// ed25519:<base64 32B>
 /// ml-dsa-65:<base64 1952B>
 /// ```
+#[derive(Clone, Debug)]
 pub struct PublicKey {
     pub name: String,
     pub keys: HybridVerifyingKeys,
@@ -117,6 +126,9 @@ impl PublicKey {
         let ml_b64 = ml_line
             .strip_prefix("ml-dsa-65:")
             .ok_or_else(|| anyhow!("expected 'ml-dsa-65:' prefix"))?;
+        if let Some(extra) = lines.next() {
+            bail!("public key file contains an unexpected extra line: {extra:?}");
+        }
         let ed_bytes = B64.decode(ed_b64).context("base64 decode ed25519 pubkey")?;
         let ed25519: [u8; ED25519_PUBLIC_KEY_LEN] = ed_bytes
             .as_slice()
@@ -182,66 +194,100 @@ pub fn validate_key_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write `contents` to a NEW file at `path`: created in a sibling temp file
-/// first (with mode 0600 on unix when `secret` is set, so no world/group
-/// readable window ever exists) and then renamed into place, so a reader
-/// never observes a partially-written file. Fails if `path` already exists
-/// at the initial check — best-effort, not a hard guarantee under a
-/// concurrent racing writer, but enough to stop an accidental `keygen`
-/// re-run from silently clobbering an existing secret (the old
-/// `fs::write` did so unconditionally, at umask-dependent permissions).
+/// Write `contents` to a NEW file at `path`: create and flush a sibling
+/// temporary file first, then atomically hard-link it into place. The hard-link
+/// commit fails if `path` already exists, eliminating the previous
+/// check-then-rename race between concurrent key generators.
 fn write_new_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
-    if path.exists() {
-        bail!("refusing to overwrite existing file {path:?}");
-    }
-    write_via_temp_rename(path, contents, secret)
+    write_via_temp(path, contents, secret, CommitMode::CreateNew)
 }
 
-/// Overwrite `path` atomically (temp file + rename): a reader never
-/// observes a partially-written file, whether `path` exists yet or not.
-/// Unlike [`write_new_atomic`], overwriting an existing file is the whole
-/// point here (e.g. re-signing an already-signed `.narinfo`), so there's no
-/// existence check.
+/// Overwrite `path` atomically (temporary file + rename). Unlike
+/// `write_new_atomic`, replacement is intentional here, for example when
+/// re-signing an existing `.narinfo`.
 pub fn write_atomic_overwrite(path: &Path, contents: &str) -> Result<()> {
-    write_via_temp_rename(path, contents, false)
+    write_via_temp(path, contents, false, CommitMode::Replace)
 }
 
-fn write_via_temp_rename(path: &Path, contents: &str, secret: bool) -> Result<()> {
+#[derive(Clone, Copy)]
+enum CommitMode {
+    CreateNew,
+    Replace,
+}
+
+fn write_via_temp(path: &Path, contents: &str, secret: bool, mode: CommitMode) -> Result<()> {
     let dir = path
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let mut rng = rand::rngs::OsRng;
     let tmp_name = format!(
-        ".{}.tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("key"),
-        std::process::id()
+        ".{}.tmp-{}-{:016x}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file"),
+        std::process::id(),
+        rng.next_u64()
     );
     let tmp_path = dir.join(tmp_name);
 
-    let write_result = (|| -> Result<()> {
+    let result = (|| -> Result<()> {
         use std::io::Write;
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create_new(true);
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(if secret { 0o600 } else { 0o644 });
+            options.mode(if secret { 0o600 } else { 0o644 });
         }
-        let mut f = opts
+        let mut file = options
             .open(&tmp_path)
             .with_context(|| format!("creating {tmp_path:?}"))?;
-        f.write_all(contents.as_bytes())
+        file.write_all(contents.as_bytes())
             .with_context(|| format!("writing {tmp_path:?}"))?;
-        f.sync_all().ok();
+        file.sync_all()
+            .with_context(|| format!("syncing {tmp_path:?}"))?;
+        drop(file);
+
+        match mode {
+            CommitMode::CreateNew => {
+                fs::hard_link(&tmp_path, path).with_context(|| {
+                    format!(
+                        "committing new file {path:?} without replacement (it may already exist)"
+                    )
+                })?;
+                // The destination is committed once hard_link succeeds. A
+                // failure to remove the temporary name must not report the
+                // whole key creation as failed after the durable destination
+                // already exists; leave cleanup as best effort.
+                let _ = fs::remove_file(&tmp_path);
+            }
+            CommitMode::Replace => {
+                fs::rename(&tmp_path, path)
+                    .with_context(|| format!("renaming {tmp_path:?} -> {path:?}"))?;
+            }
+        }
+
+        sync_parent_directory(dir)?;
         Ok(())
     })();
 
-    if let Err(e) = write_result {
+    if result.is_err() {
         let _ = fs::remove_file(&tmp_path);
-        return Err(e);
     }
+    result
+}
 
-    fs::rename(&tmp_path, path).with_context(|| format!("renaming {tmp_path:?} -> {path:?}"))
+fn sync_parent_directory(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(dir)
+            .with_context(|| format!("opening parent directory {dir:?} for sync"))?
+            .sync_all()
+            .with_context(|| format!("syncing parent directory {dir:?}"))?;
+    }
+    Ok(())
 }
 
 /// Which PQC construction a `Sig-PQC:` entry uses. A single variant today,
@@ -303,25 +349,6 @@ pub fn decode_sig_pqc(entry: &str) -> Result<(String, SigPqcAlgorithm, Vec<u8>)>
     Ok((name, algorithm, rest.to_vec()))
 }
 
-/// Verify a hybrid signature for `keyname` on `info`.
-///
-/// Tries **every** same-keyname classical `Sig:` candidate paired with
-/// **every** same-keyname `Sig-PQC:` candidate, and succeeds if **any**
-/// pairing verifies — matching Nix's own any-of-N-signatures trust model
-/// (`ValidPathInfo::checkSignatures` counts *any* good signature among
-/// possibly-many) rather than assuming exactly one of each ever appears.
-/// A malformed or unrecognized-algorithm `Sig-PQC:` candidate, or a
-/// wrong-length `Sig:` candidate, is treated as a failed candidate and
-/// skipped — never a hard abort that would block a different, valid
-/// same-keyname pairing elsewhere in the narinfo from being tried.
-/// Cap on same-keyname candidate signatures considered per half. Bounds the
-/// work an attacker-controlled `.narinfo` (many repeated `Sig:`/`Sig-PQC:`
-/// lines under the same keyname) can force: with the O(n+m) verification
-/// below this is already linear rather than the old O(n×m), but a cap plus
-/// the dedup below keeps a single narinfo from forcing unbounded distinct
-/// crypto verifications regardless.
-const MAX_SIG_CANDIDATES: usize = 32;
-
 /// Verify a hybrid signature for `keyname` on `info`: **both** an Ed25519
 /// `Sig:` candidate and an ML-DSA `Sig-PQC:` candidate, same keyname, must
 /// verify against `keys` — but NOT necessarily the same textual pair.
@@ -348,29 +375,50 @@ pub fn verify_hybrid(
     let message = fingerprint.as_bytes();
 
     let mut seen_ed = HashSet::new();
-    let ed_candidates: Vec<[u8; ED25519_SIGNATURE_LEN]> = info
-        .sigs
-        .iter()
-        .filter(|s| s.starts_with(&prefix))
-        .filter_map(|s| narinfo::parse_sig_entry(s).ok())
-        .filter_map(|(_name, bytes)| bytes.as_slice().try_into().ok())
-        .filter(|sig: &[u8; ED25519_SIGNATURE_LEN]| seen_ed.insert(*sig))
-        .take(MAX_SIG_CANDIDATES)
-        .collect();
+    let mut ed_candidates = Vec::new();
+    for entry in info.sigs.iter().filter(|entry| entry.starts_with(&prefix)) {
+        let Ok((_name, bytes)) = narinfo::parse_sig_entry(entry) else {
+            continue;
+        };
+        let Ok(signature) = <[u8; ED25519_SIGNATURE_LEN]>::try_from(bytes.as_slice()) else {
+            continue;
+        };
+        if !seen_ed.insert(signature) {
+            continue;
+        }
+        if ed_candidates.len() == narinfo::MAX_SIGNATURE_CANDIDATES {
+            bail!(
+                "too many distinct Sig: candidates for key '{keyname}': limit is {}",
+                narinfo::MAX_SIGNATURE_CANDIDATES
+            );
+        }
+        ed_candidates.push(signature);
+    }
     if ed_candidates.is_empty() {
         bail!("no valid Sig: candidate for key '{keyname}' to pair with Sig-PQC");
     }
 
     let mut seen_pqc = HashSet::new();
-    let pqc_candidates: Vec<Vec<u8>> = info
+    let mut pqc_candidates = Vec::new();
+    for entry in info
         .sig_pqc
         .iter()
-        .filter(|s| s.starts_with(&prefix))
-        .filter_map(|s| decode_sig_pqc(s).ok())
-        .map(|(_name, _algorithm, ml_dsa)| ml_dsa)
-        .filter(|sig| seen_pqc.insert(sig.clone()))
-        .take(MAX_SIG_CANDIDATES)
-        .collect();
+        .filter(|entry| entry.starts_with(&prefix))
+    {
+        let Ok((_name, _algorithm, signature)) = decode_sig_pqc(entry) else {
+            continue;
+        };
+        if !seen_pqc.insert(signature.clone()) {
+            continue;
+        }
+        if pqc_candidates.len() == narinfo::MAX_SIGNATURE_CANDIDATES {
+            bail!(
+                "too many distinct Sig-PQC: candidates for key '{keyname}': limit is {}",
+                narinfo::MAX_SIGNATURE_CANDIDATES
+            );
+        }
+        pqc_candidates.push(signature);
+    }
     if pqc_candidates.is_empty() {
         bail!("no valid Sig-PQC: candidate for key '{keyname}'");
     }
@@ -402,6 +450,8 @@ pub fn verify_hybrid(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
     use crate::hybrid::HybridSignature;
     use tempfile::tempdir;
@@ -427,6 +477,54 @@ mod tests {
         assert_eq!(loaded.name, "demo-1");
         assert_eq!(loaded.keys.ed25519, key.public().keys.ed25519);
         assert_eq!(loaded.keys.ml_dsa, key.public().keys.ml_dsa);
+    }
+
+    #[test]
+    fn new_key_files_never_clobber_existing_material() {
+        let dir = tempdir().unwrap();
+        let secret_path = dir.path().join("demo.secret");
+        let public_path = dir.path().join("demo.pub");
+        let first = SecretKey::generate("demo-1");
+        let second = SecretKey::generate("demo-1");
+
+        first.save(&secret_path).unwrap();
+        first.public().save(&public_path).unwrap();
+        assert!(second.save(&secret_path).is_err());
+        assert!(second.public().save(&public_path).is_err());
+
+        let loaded_secret = SecretKey::load(&secret_path).unwrap();
+        let loaded_public = PublicKey::load(&public_path).unwrap();
+        assert_eq!(
+            loaded_secret.public().keys.ed25519,
+            first.public().keys.ed25519
+        );
+        assert_eq!(loaded_public.keys.ed25519, first.public().keys.ed25519);
+    }
+
+    #[test]
+    fn key_files_reject_trailing_fields() {
+        let dir = tempdir().unwrap();
+        let secret_path = dir.path().join("demo.secret");
+        let public_path = dir.path().join("demo.pub");
+        let key = SecretKey::generate("demo-1");
+        key.save(&secret_path).unwrap();
+        key.public().save(&public_path).unwrap();
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&secret_path)
+            .unwrap()
+            .write_all(b"unexpected\n")
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&public_path)
+            .unwrap()
+            .write_all(b"unexpected\n")
+            .unwrap();
+
+        assert!(SecretKey::load(&secret_path).is_err());
+        assert!(PublicKey::load(&public_path).is_err());
     }
 
     #[test]
@@ -621,5 +719,43 @@ mod tests {
 
         verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys)
             .expect("an unrecognized-tag candidate must not block a later valid one");
+    }
+
+    #[test]
+    fn excessive_classical_candidates_are_rejected_explicitly() {
+        let key = SecretKey::generate("demo-1");
+        let fingerprint = "1;/nix/store/demo;sha256:demo;1;";
+        let valid = key.signer.sign(fingerprint.as_bytes());
+        let mut info = NarInfo::default();
+        for i in 0..narinfo::MAX_SIGNATURE_CANDIDATES {
+            let mut bytes = [0u8; ED25519_SIGNATURE_LEN];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            info.sigs.push(format!("demo-1:{}", B64.encode(bytes)));
+        }
+        info.sigs
+            .push(format!("demo-1:{}", B64.encode(valid.ed25519)));
+        info.sig_pqc.push(encode_sig_pqc("demo-1", &valid.ml_dsa));
+
+        let err = verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys).unwrap_err();
+        assert!(err.to_string().contains("too many distinct Sig:"));
+    }
+
+    #[test]
+    fn excessive_pqc_candidates_are_rejected_explicitly() {
+        let key = SecretKey::generate("demo-1");
+        let fingerprint = "1;/nix/store/demo;sha256:demo;1;";
+        let valid = key.signer.sign(fingerprint.as_bytes());
+        let mut info = NarInfo::default();
+        info.sigs
+            .push(format!("demo-1:{}", B64.encode(valid.ed25519)));
+        for i in 0..narinfo::MAX_SIGNATURE_CANDIDATES {
+            let mut bytes = vec![0u8; ML_DSA_65_SIGNATURE_LEN];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            info.sig_pqc.push(encode_sig_pqc("demo-1", &bytes));
+        }
+        info.sig_pqc.push(encode_sig_pqc("demo-1", &valid.ml_dsa));
+
+        let err = verify_hybrid(&info, fingerprint, "demo-1", &key.public().keys).unwrap_err();
+        assert!(err.to_string().contains("too many distinct Sig-PQC:"));
     }
 }

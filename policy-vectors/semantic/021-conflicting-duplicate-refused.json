@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "case_id": "conflicting-duplicate-refuses-order-independently",
+  "description": "The same signature identity cannot carry both valid and invalid verification outcomes; contradictory adapter evidence must fail closed instead of depending on input order.",
+  "tags": [
+    "bounded-work",
+    "determinism",
+    "fail-closed"
+  ],
+  "evaluation_time": 100,
+  "policy": {
+    "policy_id": "classical-required",
+    "version": 1,
+    "max_signature_observations": 128,
+    "max_signature_candidates": 32,
+    "algorithm_registry": [
+      {
+        "algorithm": "ed25519",
+        "family": "elliptic_curve",
+        "assurance_class": "classical"
+      }
+    ],
+    "group_definitions": [
+      {
+        "group": "classical",
+        "predicate": {
+          "allowed_assurance_classes": [
+            "classical"
+          ]
+        }
+      }
+    ],
+    "accept_if_any": [
+      {
+        "clause_id": "required",
+        "required_groups": [
+          {
+            "group": "classical",
+            "min_distinct_identities": 1
+          }
+        ],
+        "relations": []
+      }
+    ],
+    "epoch": 1,
+    "previous_policy_hash": null,
+    "active_from": null,
+    "expires_at": null,
+    "family_registry": [
+      {
+        "family": "elliptic_curve",
+        "status": "enabled"
+      }
+    ]
+  },
+  "trusted_keys": [
+    {
+      "key_id": "cache-ed",
+      "key_name": "cache",
+      "signer_identity": "cache-owner",
+      "algorithm": "ed25519",
+      "roles": [
+        "cache-signing"
+      ],
+      "authority": "cache-owner",
+      "custody_domain": "cache-ed"
+    }
+  ],
+  "input": {
+    "adapter": "semantic",
+    "signatures": [
+      {
+        "key_id": "cache-ed",
+        "signature_id": "same-bytes",
+        "verification": "valid"
+      },
+      {
+        "key_id": "cache-ed",
+        "signature_id": "same-bytes",
+        "verification": "invalid"
+      }
+    ]
+  },
+  "expected": {
+    "decision": "refuse",
+    "required_reason_codes": [
+      "conflicting_candidate"
+    ],
+    "forbidden_reason_codes": [],
+    "group_counts": {}
+  },
+  "minimum_policy_epoch": 0
+}
