@@ -1,6 +1,6 @@
 # Nix signature-authorization integration contract
 
-Status: implemented by Patch Set 10
+Status: implemented
 
 This contract isolates the smallest upstream-facing security boundary discovered
 by the prototype: whether a composed authorization policy is merely advisory or

@@ -25,8 +25,9 @@ The distinct question explored here is authorization policy:
 
 The current prototype answers that narrow question for one concrete pair:
 it requires same-key-name Ed25519 and ML-DSA-65 signatures under its
-experimental `Sig:` + `Sig-PQC:` representation. The committed Patch Set 3
-conformance harness expresses the policy independently of that representation.
+experimental `Sig:` + `Sig-PQC:` representation. The committed
+representation-neutral conformance harness expresses the policy independently
+of that representation.
 
 ## Primary sources
 

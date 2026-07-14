@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use nix_pqc_cache_proxy::artifact_attestation::{
+use nix_signature_policy::artifact_attestation::{
     attest_artifact, load_bundle, to_pretty_json, verify_artifact_attestation,
 };
-use nix_pqc_cache_proxy::keys::{PublicKey, SecretKey, write_atomic_overwrite};
+use nix_signature_policy::keys::{PublicKey, SecretKey, write_atomic_overwrite};
 
 #[derive(Parser, Debug)]
 #[command(about = "Create or verify an Ed25519+ML-DSA-65 artifact attestation")]

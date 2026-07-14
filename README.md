@@ -1,45 +1,37 @@
-# nix-pqc-cache-proxy: composable signature-authorization reference prototype
+# nix-signature-policy
 
-[![CI](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/actions/workflows/ci.yml)
+[![CI](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml)
 
-Not a production proxy, not a native Nix implementation, and not audited
-cryptography. This is a working, independently buildable, test-vectored
-prototype for one specific authorization rule: require a valid Ed25519
-signature **and** a valid ML-DSA-65 signature for the same cache identity.
-It includes a CLI, a local-cache signer/verifier, and a reverse proxy.
+Reference implementation and conformance suite for composable,
+downgrade-resistant signature authorization in Nix.
 
-The prototype uses an experimental `Sig-PQC:` narinfo field. That field is
-**not** claimed as necessary or preferred for upstream Nix. Determinate Nix
-already demonstrates native ML-DSA algorithm agility through the ordinary
-signature machinery. The distinct contribution studied here is composed
-policy: accepting any one trusted signature is not the same as requiring a
-classical and post-quantum group together.
+The durable contribution is a transport-neutral policy layer that begins after
+cryptographic signature verification and decides whether trusted evidence is
+sufficient to authorize a Nix store path. It supports typed signer groups,
+thresholds, identity binding, independent authorities, cryptographic-family
+diversity, lifecycle and recovery states, rollback protection, explicit
+integration modes, and deterministic decision evidence.
 
-Real, unmodified `nix` accepts the *classical* signature this tool adds and
-ignores `Sig-PQC:` entirely. It does not verify the hybrid policy; this
-prototype does. See "An honest correction" for the real-Nix proof and its
-limits.
+Ed25519 plus ML-DSA remains an important migration profile, but neither PQC nor
+the historical `Sig-PQC:` field is privileged by the architecture. The
+`nix-pqc-cache-proxy` binary remains as a compatibility and deployment
+experiment; it is not the normative upstream design.
 
-**This is exploratory, unaudited prototype code.** Its vendored hybrid
-construction (`src/hybrid.rs`) has not had a cryptographic audit. Do not use
-it to protect systems you depend on.
+**Status:** research prototype. The policy engine and conformance suite are not
+a native Nix implementation, and the bundled cryptographic/proxy components are
+unaudited and must not be treated as production security infrastructure.
 
-Project positioning and design decisions:
+Start here:
 
-- [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md)
-- [`docs/SIGNATURE_POLICY_MODEL.md`](docs/SIGNATURE_POLICY_MODEL.md)
-- [`docs/TYPED_POLICY_CORE.md`](docs/TYPED_POLICY_CORE.md)
-- [`docs/POLICY_LIFECYCLE_AND_RECOVERY.md`](docs/POLICY_LIFECYCLE_AND_RECOVERY.md)
-- [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md)
-- [`docs/TRUST_RECEIPTS.md`](docs/TRUST_RECEIPTS.md)
-- [`docs/adr/0001-policy-over-transport.md`](docs/adr/0001-policy-over-transport.md)
-- [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md)
-- [`docs/TRUST_REGISTRIES.md`](docs/TRUST_REGISTRIES.md)
-- [`docs/LOCAL_TRUST_STATE.md`](docs/LOCAL_TRUST_STATE.md)
-- [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md)
-- [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md)
-- [`rfc/README.md`](rfc/README.md) — status of the historical transport RFC
-- [`docs/OPERATIONAL_HARDENING.md`](docs/OPERATIONAL_HARDENING.md) — bounded proxy operations and observability
+- [`docs/CORE_V1.md`](docs/CORE_V1.md) — frozen minimal interoperability profile;
+- [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md);
+- [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md);
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md);
+- [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md);
+- [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md);
+- [`docs/UPSTREAM_MINIMAL_SLICE.md`](docs/UPSTREAM_MINIMAL_SLICE.md);
+- [`docs/SECURITY_REVIEW_CHECKLIST.md`](docs/SECURITY_REVIEW_CHECKLIST.md);
+- [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md).
 
 ## Trust model — read this first
 
@@ -497,7 +489,7 @@ Deterministic source-only releases are built from clean Git-tracked files:
 
 ```console
 nix run .#release-source -- --out-dir dist
-nix run .#verify-release -- dist/nix-pqc-cache-proxy-VERSION.release.json
+nix run .#verify-release -- dist/nix-signature-policy-VERSION.release.json
 ```
 
 The release statement may be hybrid-attested with a separate Ed25519+ML-DSA-65
@@ -509,12 +501,12 @@ not certify production readiness, audit status, or reproducible binaries. See
 
 - No changes to the real Nix daemon/client source, no liboqs FFI, no attempt
   to make `cache.nixos.org` itself PQC-signed.
-- Production service operation. Patch Set 6 adds bounded admission,
-  differentiated failures, safe cache headers, health/readiness/metrics,
-  structured logs, redirect refusal, fault injection, and graceful draining,
-  but it does not provide TLS termination, client authentication, distributed
-  rate limiting, supervisor packaging, long-duration soak evidence, or an
-  independent security audit.
+- Production service operation. The operational-hardening profile adds
+  bounded admission, differentiated failures, safe cache headers,
+  health/readiness/metrics, structured logs, redirect refusal, fault
+  injection, and graceful draining, but it does not provide TLS termination,
+  client authentication, distributed rate limiting, supervisor packaging,
+  long-duration soak evidence, or an independent security audit.
 - Production key management, rotation, or multi-algorithm PQC support in
   the proxy itself (the wire format's tag byte anticipates it; the proxy
   doesn't implement it).

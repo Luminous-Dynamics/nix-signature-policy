@@ -113,30 +113,13 @@ pub fn run_directory(root: &Path) -> Result<ConformanceReport> {
         }
 
         let adapter = case.input.adapter_name().to_string();
-        *adapter_counts.entry(adapter.clone()).or_insert(0) += 1;
-        let candidates = case.input.normalize(&case.trusted_keys);
-        let decision = evaluate_policy_with_context(
-            &case.policy,
-            &case.trusted_keys,
-            &candidates,
-            EvaluationContext {
-                evaluation_time: case.evaluation_time,
-                minimum_policy_epoch: case.minimum_policy_epoch,
-            },
-        );
-        let failures = compare_expected(&case.expected, &decision);
-        cases.push(CaseReport {
-            case_id: case.case_id,
-            path: path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/"),
-            adapter,
-            passed: failures.is_empty(),
-            failures,
-            decision,
-        });
+        *adapter_counts.entry(adapter).or_insert(0) += 1;
+        let relative_path = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        cases.push(evaluate_case(&case, relative_path)?);
     }
 
     let passed = cases.iter().filter(|case| case.passed).count();
@@ -209,6 +192,31 @@ fn validate_case_structure(case: &ConformanceCase, path: &Path) -> Result<()> {
         bail!("vector {path:?} requires and forbids the same reason code");
     }
     Ok(())
+}
+
+/// Evaluate one already-parsed conformance case.
+pub fn evaluate_case(case: &ConformanceCase, path: String) -> Result<CaseReport> {
+    validate_case_structure(case, Path::new(&path))?;
+    let adapter = case.input.adapter_name().to_string();
+    let candidates = case.input.normalize(&case.trusted_keys);
+    let decision = evaluate_policy_with_context(
+        &case.policy,
+        &case.trusted_keys,
+        &candidates,
+        EvaluationContext {
+            evaluation_time: case.evaluation_time,
+            minimum_policy_epoch: case.minimum_policy_epoch,
+        },
+    );
+    let failures = compare_expected(&case.expected, &decision);
+    Ok(CaseReport {
+        case_id: case.case_id.clone(),
+        path,
+        adapter,
+        passed: failures.is_empty(),
+        failures,
+        decision,
+    })
 }
 
 fn compare_expected(expected: &ExpectedOutcome, actual: &PolicyDecision) -> Vec<String> {

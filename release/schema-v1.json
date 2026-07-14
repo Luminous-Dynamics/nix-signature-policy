@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/release/schema-v1.json",
-  "title": "nix-pqc-cache-proxy deterministic release statement",
+  "$id": "https://github.com/Luminous-Dynamics/nix-signature-policy/release/schema-v1.json",
+  "title": "nix-signature-policy deterministic release statement",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "project", "source", "artifacts", "inputs"],

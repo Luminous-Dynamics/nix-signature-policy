@@ -1,7 +1,7 @@
 # Local trust-state checkpoints
 
 Policy and registry epochs prevent rollback only after a client remembers the
-highest state it has accepted. Patch Set 14 adds a deliberately small local
+highest state it has accepted. This layer adds a deliberately small local
 checkpoint format and the `trust-state` CLI.
 
 Each named deployment domain records:
@@ -51,3 +51,11 @@ trust-state apply --domain cache.example --state state.json \
 
 `verify` checks the state format and digest. `show` emits canonical pretty JSON.
 Writes use a same-directory temporary file followed by rename.
+
+## Commitment migration
+
+The trust-state payload and its policy/registry checkpoints use commitment-v1
+framing. A state file created by an earlier undifferentiated-hash prototype must
+not be silently upgraded. Reinitialize from independently trusted current
+policy and registry objects, then preserve the older file only as historical
+evidence.

@@ -1,6 +1,6 @@
 # Operational hardening profile
 
-Status: implemented prototype profile, Patch Set 6.
+Status: implemented prototype profile.
 
 This document describes the network and process-safety boundaries of the
 `proxy` subcommand. It does not upgrade the repository's cryptographic

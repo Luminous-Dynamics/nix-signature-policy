@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit reproducibility metadata for a nix-pqc-cache-proxy checkout.
+"""Emit reproducibility metadata for a nix-signature-policy checkout.
 
 Uses only the Python standard library so it can run in the locked Nix shell and
 in ordinary CI. The report is intentionally JSON for easy attachment to test,
@@ -164,7 +164,7 @@ def main() -> int:
         }
 
     report = {
-        "schema": "nix-pqc-cache-proxy-environment-v1",
+        "schema": "nix-signature-policy-environment-v1",
         "project": {
             "name": cargo_toml["package"]["name"],
             "version": cargo_toml["package"]["version"],

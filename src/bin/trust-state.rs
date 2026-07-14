@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use nix_pqc_cache_proxy::integration::AuthorizationRequest;
-use nix_pqc_cache_proxy::state::{
+use nix_signature_policy::integration::AuthorizationRequest;
+use nix_signature_policy::state::{
     advance_trust_state, apply_trust_state, initialize_trust_state, parse_trust_state,
     trust_state_to_pretty_json, verify_trust_state,
 };
@@ -110,7 +110,7 @@ fn read_request(path: &Path) -> Result<AuthorizationRequest> {
     serde_json::from_slice(&bytes).with_context(|| format!("parsing request {path:?}"))
 }
 
-fn read_state(path: &Path) -> Result<nix_pqc_cache_proxy::state::TrustStateFile> {
+fn read_state(path: &Path) -> Result<nix_signature_policy::state::TrustStateFile> {
     let bytes = fs::read(path).with_context(|| format!("reading trust state {path:?}"))?;
     parse_trust_state(&bytes).with_context(|| format!("parsing trust state {path:?}"))
 }

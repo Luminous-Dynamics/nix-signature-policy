@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use nix_pqc_cache_proxy::integration::AuthorizationRequest;
-use nix_pqc_cache_proxy::receipt::{
+use nix_signature_policy::integration::AuthorizationRequest;
+use nix_signature_policy::receipt::{
     ReceiptArtifact, build_trust_receipt, explain_trust_receipt, parse_trust_receipt,
     to_pretty_json, verify_trust_receipt,
 };

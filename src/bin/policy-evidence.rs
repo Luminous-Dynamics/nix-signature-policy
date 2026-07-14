@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use nix_pqc_cache_proxy::conformance::load_case;
-use nix_pqc_cache_proxy::evidence::{
+use nix_signature_policy::conformance::load_case;
+use nix_signature_policy::evidence::{
     EvidenceVerificationOptions, bundle_from_conformance_case, load_bundle, to_pretty_json,
     verify_bundle,
 };
-use nix_pqc_cache_proxy::keys::{PublicKey, SecretKey, write_atomic_overwrite};
+use nix_signature_policy::keys::{PublicKey, SecretKey, write_atomic_overwrite};
 
 #[derive(Parser, Debug)]
 #[command(about = "Export and verify deterministic signature-policy evidence")]

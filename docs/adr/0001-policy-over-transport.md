@@ -27,7 +27,7 @@ composed into an authoritative admission decision?”
    adapter supported by the current prototype.
 2. Do not present `Sig-PQC:` as necessary for upstream Nix or as the project’s
    principal novelty.
-3. Define Patch Set 3’s conformance cases in a representation-neutral semantic
+3. Define the conformance cases in a representation-neutral semantic
    model.
 4. Treat algorithm-tagged ordinary signatures as an equally valid, and likely
    preferable, adapter when the implementation supports them.
@@ -50,7 +50,7 @@ Positive:
 
 Costs:
 
-- Existing `Sig-PQC:` vectors remain transport-specific; Patch Set 3 adds the
+- Existing `Sig-PQC:` vectors remain transport-specific; this change adds the
   adapter layer and representation-neutral policy model required by this ADR.
 - The current CLI implements only one narrow hybrid rule; documentation must
   distinguish it from the planned general model.
@@ -76,6 +76,6 @@ implementation, and source of cryptographic and parser test vectors.
 
 ## Implementation status
 
-Implemented in Patch Set 3 through `src/policy.rs`, `src/policy_adapters.rs`,
+Implemented through `src/policy.rs`, `src/policy_adapters.rs`,
 `src/conformance.rs`, and `policy-vectors/`. The historical transport remains
 available as one adapter and no longer defines the policy semantics.

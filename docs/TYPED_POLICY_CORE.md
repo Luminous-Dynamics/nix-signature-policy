@@ -1,6 +1,6 @@
 # Typed signature-policy core
 
-Status: implemented by Patch Set 8
+Status: implemented (core-v1)
 
 The evaluator derives signer-group membership from policy-owned predicates over
 trusted metadata. Keys no longer carry arbitrary group labels.

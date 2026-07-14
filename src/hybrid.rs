@@ -229,7 +229,7 @@ mod tests {
     fn sign_verify_round_trip() {
         let signer = HybridSigner::generate();
         let keys = signer.verifying_keys();
-        let msg = b"nix-pqc-cache-proxy";
+        let msg = b"nix-signature-policy";
         let sig = signer.sign(msg);
         assert!(verify(&keys, msg, &sig).is_ok());
     }

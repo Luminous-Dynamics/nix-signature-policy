@@ -4,7 +4,7 @@ The authorization policy and the trusted-key set are separate trust domains.
 A policy describes which trusted attributes are sufficient; a registry states
 which concrete keys possess those attributes.
 
-Patch Set 13 wraps trusted keys in a `TrustRegistry` containing:
+The trust-registry layer wraps trusted keys in a `TrustRegistry` containing:
 
 - a stable `registry_id`;
 - a monotonically increasing `epoch`;

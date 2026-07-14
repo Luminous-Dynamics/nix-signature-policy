@@ -2,7 +2,7 @@
 
 ## Prototype security boundary
 
-`nix-pqc-cache-proxy` is an experimental reference implementation. It is not an
+`nix-signature-policy` is an experimental reference implementation. It is not an
 audited production cache, a replacement for the Nix trust root, or a claim that
 re-signing a classical upstream makes that upstream post-quantum secure.
 

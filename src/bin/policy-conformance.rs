@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use nix_pqc_cache_proxy::conformance::run_directory;
+use nix_signature_policy::conformance::run_directory;
 
 #[derive(Parser, Debug)]
 #[command(about = "Run adversarial signature-policy conformance vectors")]

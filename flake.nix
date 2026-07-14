@@ -1,5 +1,5 @@
 {
-  description = "nix-pqc-cache-proxy — reproducible composable signature-authorization prototype";
+  description = "nix-signature-policy — reproducible composable signature-authorization prototype";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -56,9 +56,9 @@
           doCheck = true;
           meta = {
             description = manifest.package.description;
-            homepage = "https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy";
+            homepage = "https://github.com/Luminous-Dynamics/nix-signature-policy";
             license = lib.licenses.agpl3Plus;
-            mainProgram = pname;
+            mainProgram = "nix-pqc-cache-proxy";
             platforms = lib.platforms.unix;
           };
         });
@@ -145,7 +145,7 @@
 
         apps.default = {
           type = "app";
-          program = "${package}/bin/${pname}";
+          program = "${package}/bin/nix-pqc-cache-proxy";
           meta.description = manifest.package.description;
         };
 
@@ -169,6 +169,17 @@
             python3 scripts/check-trust-state.py
             python3 scripts/build-policy-manifest.py --check
             python3 scripts/check-semantic-consistency.py
+            python3 scripts/check-core-profile.py
+            python3 scripts/check-commitment-vectors.py
+            python3 scripts/check-review-package.py
+            python3 scripts/check-reference-model.py
+            python3 scripts/check-authorization-protocol.py
+            python3 scripts/check-transition-governance.py
+            python3 scripts/build-differential-corpus.py --check
+            python3 scripts/check-differential-corpus.py
+            python3 scripts/check-resource-profile.py
+            python3 scripts/check-integration-vectors.py
+            python3 scripts/check-package-identity.py
             cargo run --locked --bin policy-conformance -- --vectors policy-vectors --format json >/dev/null
             tmpdir="$(mktemp -d)"
             trap 'rm -rf "$tmpdir"' EXIT
@@ -278,6 +289,12 @@
           meta.description = "Manage local rollback-resistant policy and registry checkpoints";
         };
 
+        apps.signature-authorize = {
+          type = "app";
+          program = "${package}/bin/nix-signature-authorize";
+          meta.description = "Evaluate one bounded normalized signature-authorization request";
+        };
+
         apps.environment = mkLocalApp {
           name = "nix-pqc-environment";
           description = "Emit machine-readable toolchain and lock provenance";
@@ -373,6 +390,87 @@
             printf '%s\n' 'semantic consistency check passed' > "$out/result"
           '';
 
+          core-profile = pkgs.runCommand "${pname}-core-profile" {
+            nativeBuildInputs = [ policySchemaPython ];
+          } ''
+            cd ${source}
+            python3 scripts/check-core-profile.py
+            mkdir -p "$out"
+            printf '%s\n' 'core-v1 profile check passed' > "$out/result"
+          '';
+          commitment-vectors = pkgs.runCommand "${pname}-commitment-vectors" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-commitment-vectors.py
+            mkdir -p "$out"
+            printf '%s\n' 'commitment vectors passed' > "$out/result"
+          '';
+          review-package = pkgs.runCommand "${pname}-review-package" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-review-package.py
+            mkdir -p "$out"
+            printf '%s\n' 'review package check passed' > "$out/result"
+          '';
+          reference-model = pkgs.runCommand "${pname}-reference-model" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-reference-model.py
+            mkdir -p "$out"
+            printf '%s\n' 'independent reference model passed' > "$out/result"
+          '';
+          authorization-protocol = pkgs.runCommand "${pname}-authorization-protocol" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-authorization-protocol.py
+            mkdir -p "$out"
+            printf '%s\n' 'bounded authorization protocol passed' > "$out/result"
+          '';
+          transition-governance = pkgs.runCommand "${pname}-transition-governance" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-transition-governance.py
+            mkdir -p "$out"
+            printf '%s\n' 'transition governance passed' > "$out/result"
+          '';
+          differential-conformance = pkgs.runCommand "${pname}-differential-conformance" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/build-differential-corpus.py --check
+            python3 scripts/check-differential-corpus.py
+            mkdir -p "$out"
+            printf '%s\n' 'differential conformance passed' > "$out/result"
+          '';
+          resource-profile = pkgs.runCommand "${pname}-resource-profile" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-resource-profile.py
+            mkdir -p "$out"
+            printf '%s\n' 'resource profile passed' > "$out/result"
+          '';
+          integration-vectors = pkgs.runCommand "${pname}-integration-vectors" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-integration-vectors.py
+            mkdir -p "$out"
+            printf '%s\n' 'integration decision matrix passed' > "$out/result"
+          '';
+          package-identity = pkgs.runCommand "${pname}-package-identity" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            cd ${source}
+            python3 scripts/check-package-identity.py
+            mkdir -p "$out"
+            printf '%s\n' 'package identity passed' > "$out/result"
+          '';
           policy-conformance = mkCargoCheck "policy-conformance" ''
             cargo run --locked --bin policy-conformance -- \
               --vectors policy-vectors --format json > policy-report.json
@@ -426,13 +524,13 @@ PY
         };
 
         devShells.default = pkgs.mkShell {
-          name = "nix-pqc-cache-proxy-dev";
+          name = "nix-signature-policy-dev";
           packages = devPackages ++ [ pkgs.rust-analyzer ];
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           shellHook = ''
             export RUST_BACKTRACE=1
             cat <<'BANNER'
-            nix-pqc-cache-proxy development shell
+            nix-signature-policy development shell
 
               nix flake check             # hermetic package + fmt/clippy/test/docs
               nix run .#check              # same commands interactively
@@ -456,12 +554,23 @@ PY
               python3 scripts/check-trust-state.py
               python3 scripts/build-policy-manifest.py --check
               python3 scripts/check-semantic-consistency.py
+              python3 scripts/check-core-profile.py
+              python3 scripts/check-commitment-vectors.py
+              python3 scripts/check-review-package.py
+              python3 scripts/check-reference-model.py
+              python3 scripts/check-authorization-protocol.py
+              python3 scripts/check-transition-governance.py
+              python3 scripts/build-differential-corpus.py --check
+              python3 scripts/check-differential-corpus.py
+              python3 scripts/check-resource-profile.py
+              python3 scripts/check-integration-vectors.py
+              python3 scripts/check-package-identity.py
             BANNER
           '';
         };
 
         devShells.fuzz = pkgs.mkShell {
-          name = "nix-pqc-cache-proxy-fuzz";
+          name = "nix-signature-policy-fuzz";
           packages = [ fuzzToolchain pkgs.cargo-fuzz pkgs.git ];
           RUST_SRC_PATH = "${fuzzToolchain}/lib/rustlib/src/rust/library";
           shellHook = ''
@@ -471,7 +580,7 @@ PY
         };
 
         devShells.ci = pkgs.mkShell {
-          name = "nix-pqc-cache-proxy-ci";
+          name = "nix-signature-policy-ci";
           packages = devPackages;
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           RUST_BACKTRACE = "1";

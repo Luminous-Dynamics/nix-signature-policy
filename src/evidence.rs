@@ -40,6 +40,7 @@ pub const EVIDENCE_SCHEMA_VERSION: u32 = 1;
 /// Defensive maximum accepted evidence-file size.
 pub const MAX_EVIDENCE_BYTES: u64 = 8 * 1024 * 1024;
 /// Domain separator for optional producer attestations.
+// Stable legacy domain retained so existing prototype attestations are not reinterpreted.
 const ATTESTATION_DOMAIN: &[u8] = b"nix-pqc-cache-proxy/policy-evidence/v1\0";
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;

@@ -5,8 +5,8 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use nix_pqc_cache_proxy::keys::SecretKey;
-use nix_pqc_cache_proxy::narinfo::NarInfo;
+use nix_signature_policy::keys::SecretKey;
+use nix_signature_policy::narinfo::NarInfo;
 
 /// Real narinfo fields (same fixture as `narinfo.rs`'s own tests — fetched
 /// 2026-07-10 from cache.nixos.org for bash-5.2p37) rather than a fabricated
@@ -47,7 +47,7 @@ fn bench_verify(c: &mut Criterion) {
     let verifying_keys = key.public().keys;
     c.bench_function("hybrid_verify", |b| {
         b.iter(|| {
-            nix_pqc_cache_proxy::hybrid::verify(&verifying_keys, fingerprint.as_bytes(), &sig)
+            nix_signature_policy::hybrid::verify(&verifying_keys, fingerprint.as_bytes(), &sig)
                 .unwrap()
         })
     });
@@ -58,7 +58,7 @@ fn bench_sig_pqc_encode(c: &mut Criterion) {
     let fingerprint = sample_narinfo().fingerprint().unwrap();
     let sig = key.signer.sign(fingerprint.as_bytes());
     c.bench_function("sig_pqc_encode", |b| {
-        b.iter(|| nix_pqc_cache_proxy::keys::encode_sig_pqc("bench-key", &sig.ml_dsa))
+        b.iter(|| nix_signature_policy::keys::encode_sig_pqc("bench-key", &sig.ml_dsa))
     });
 }
 

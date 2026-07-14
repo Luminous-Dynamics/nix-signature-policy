@@ -9,7 +9,7 @@ The policy conformance harness produces a decision from four inputs:
 3. normalized signature candidates and verification outcomes;
 4. an evaluation time.
 
-Patch Set 5 makes that decision portable. The `policy-evidence` tool records the
+The evidence-bundle layer makes that decision portable. The `policy-evidence` tool records the
 canonical inputs, exact evaluator output, source-artifact binding, and an
 optional hybrid producer attestation in a strict JSON envelope. An offline
 verifier discards trust in the serialized decision and recomputes it.

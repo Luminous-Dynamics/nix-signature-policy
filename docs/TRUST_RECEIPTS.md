@@ -1,6 +1,6 @@
 # Compact trust-admission receipts
 
-Status: implemented by Patch Set 11
+Status: implemented
 
 Trust receipts preserve a small, deterministic explanation of why an artifact
 was accepted or refused at the Nix admission boundary.
@@ -19,7 +19,7 @@ A receipt records:
 
 ## Commands
 
-Create a receipt from a normalized Patch Set 10 authorization request:
+Create a receipt from a normalized Nix-integration authorization request:
 
 ```sh
 cargo run --locked --bin trust-receipt -- create \
@@ -63,3 +63,10 @@ eligibility for new substitution, and deployment policy.
 Schema v2 records the trusted-key registry ID, epoch, canonical SHA-256, minimum
 committed registry epoch, and registry reason codes. A receipt therefore binds
 both halves of the authorization state: the rule and the concrete trusted keys.
+
+## Commitment format
+
+Receipt `payload_sha256` uses the domain-separated `receipt-payload`
+commitment-v1 framing documented in `docs/CANONICAL_COMMITMENTS.md`. Receipts
+created before that framing are historical prototype artifacts and do not verify
+under the current implementation.

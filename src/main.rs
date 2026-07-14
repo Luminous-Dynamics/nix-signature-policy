@@ -4,9 +4,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use nix_pqc_cache_proxy::keys::{self, PublicKey, SecretKey};
-use nix_pqc_cache_proxy::narinfo::{self, NarInfo};
-use nix_pqc_cache_proxy::proxy;
+use nix_signature_policy::keys::{self, PublicKey, SecretKey};
+use nix_signature_policy::narinfo::{self, NarInfo};
+use nix_signature_policy::proxy;
 
 /// Prototype: hybrid Ed25519+ML-DSA-65 signing/verification for Nix binary
 /// caches, plus a local trust-translating reverse proxy.
@@ -22,9 +22,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Generate a hybrid Ed25519+ML-DSA-65 signing key: writes <name>.secret and <name>.pub
+    /// Generate a hybrid Ed25519+ML-DSA-65 signing key: writes `<name>.secret` and `<name>.pub`
     Keygen {
-        /// Key name, e.g. "my-cache-1" (mirrors Nix's "<hostname>-N" convention)
+        /// Key name, e.g. "my-cache-1" (mirrors Nix's `<hostname>-N` convention)
         name: String,
         /// Output directory for the key files
         #[arg(long, default_value = ".")]

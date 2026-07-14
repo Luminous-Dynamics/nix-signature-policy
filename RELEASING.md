@@ -31,10 +31,10 @@ nix run .#release-source -- --out-dir dist
 
 This creates:
 
-- `nix-pqc-cache-proxy-VERSION-source.tar.gz`;
-- `nix-pqc-cache-proxy-VERSION-source.manifest.json`;
-- `nix-pqc-cache-proxy-VERSION.release.json`;
-- `nix-pqc-cache-proxy-VERSION.environment.json`.
+- `nix-signature-policy-VERSION-source.tar.gz`;
+- `nix-signature-policy-VERSION-source.manifest.json`;
+- `nix-signature-policy-VERSION.release.json`;
+- `nix-signature-policy-VERSION.environment.json`.
 
 The environment report is informational and intentionally not part of the
 reproducible release statement. It records the builder's tools and platform;
@@ -45,7 +45,7 @@ Verify the release independently:
 
 ```console
 nix run .#verify-release -- \
-  dist/nix-pqc-cache-proxy-VERSION.release.json
+  dist/nix-signature-policy-VERSION.release.json
 ```
 
 For a reproducibility check, build into two empty directories and compare them:
@@ -82,8 +82,8 @@ Verify with an independently obtained public key:
 
 ```console
 nix run .#verify-release -- \
-  dist/nix-pqc-cache-proxy-VERSION.release.json \
-  --attestation dist/nix-pqc-cache-proxy-VERSION.release.attestation.json \
+  dist/nix-signature-policy-VERSION.release.json \
+  --attestation dist/nix-signature-policy-VERSION.release.attestation.json \
   --trusted-key /trusted/luminous-release-1.pub
 ```
 

@@ -74,9 +74,9 @@ A useful minimum state model is:
 
 Transitions should be explicit, time- or configuration-bound, and visible in
 evidence. A missing PQ signature in `hybrid-required` must not silently fall
-back to `classical-only`. Patch Set 9 adds machine-readable activation,
-family-lifecycle, and rollback semantics rather than treating a permanent OR
-clause as a migration mechanism.
+back to `classical-only`. The policy-lifecycle layer adds machine-readable
+activation, family-lifecycle, and rollback semantics rather than treating a
+permanent OR clause as a migration mechanism.
 
 ### 6. Evidence
 
@@ -93,8 +93,8 @@ decision:
 - migration state;
 - final decision and refusal reason.
 
-Patch Set 5 implements a deterministic schema-v1 policy-replay bundle and an
-offline verifier. It recomputes the exact decision from canonical policy inputs,
+The evidence-bundle layer implements a deterministic schema-v1 policy-replay
+bundle and an offline verifier. It recomputes the exact decision from canonical policy inputs,
 can bind the original source artifact by SHA-256, and can verify an optional
 hybrid producer attestation. Candidate cryptographic verification outcomes are
 still evidence inputs in v1; they are not independently re-proven from raw wire

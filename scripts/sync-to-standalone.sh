@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Sync nix-pqc-cache-proxy to its standalone public GitHub repo.
+# Sync nix-signature-policy to its standalone public GitHub repo.
 #
-# Standalone: github.com/Luminous-Dynamics/nix-pqc-cache-proxy
+# Standalone: github.com/Luminous-Dynamics/nix-signature-policy
 #   (the prototype backing the draft NixOS RFC in rfc/. The crate is
 #    designed to have zero private-monorepo path dependencies -- see
 #    README.md's "fresh-clone reproducibility" claim -- so this sync is a
 #    plain directory copy, no path-dependency fixups needed.)
 #
 # Usage:
-#   bash nix-pqc-cache-proxy/scripts/sync-to-standalone.sh [--dry-run] [--force]
+#   bash nix-signature-policy/scripts/sync-to-standalone.sh [--dry-run] [--force]
 
 set -euo pipefail
 
-STANDALONE_REMOTE="git@github.com:Luminous-Dynamics/nix-pqc-cache-proxy.git"
+STANDALONE_REMOTE="git@github.com:Luminous-Dynamics/nix-signature-policy.git"
 
 MONOREPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CRATE_DIR="${MONOREPO_ROOT}/nix-pqc-cache-proxy"
-STANDALONE_REPO="/tmp/nix-pqc-cache-proxy-standalone-sync"
+CRATE_DIR="${MONOREPO_ROOT}/nix-signature-policy"
+STANDALONE_REPO="/tmp/nix-signature-policy-standalone-sync"
 
 DRY_RUN=false
 FORCE=false
@@ -55,20 +55,20 @@ fi
 # MASTER_ROADMAP.md "Clean-checkpoint sync cadence"). git archive exports
 # exactly what is committed.
 
-STAGING="$(mktemp -d /tmp/nix-pqc-cache-proxy-sync-staging.XXXXXX)"
+STAGING="$(mktemp -d /tmp/nix-signature-policy-sync-staging.XXXXXX)"
 trap 'rm -rf "${STAGING}"' EXIT
 
 info "Exporting committed HEAD to staging..."
-git -C "${MONOREPO_ROOT}" archive HEAD -- nix-pqc-cache-proxy | tar -x -C "${STAGING}"
+git -C "${MONOREPO_ROOT}" archive HEAD -- nix-signature-policy | tar -x -C "${STAGING}"
 
-info "Syncing nix-pqc-cache-proxy (HEAD) -> standalone root..."
+info "Syncing nix-signature-policy (HEAD) -> standalone root..."
 rsync -a --delete \
     --exclude='.git' \
-    "${STAGING}/nix-pqc-cache-proxy/" "${STANDALONE_REPO}/"
+    "${STAGING}/nix-signature-policy/" "${STANDALONE_REPO}/"
 
 # --- Post-sync check ------------------------------------------------------------
 # Cargo.lock is tracked for this crate (it's a [[bin]] application, not a
-# library — see the root .gitignore's !nix-pqc-cache-proxy/Cargo.lock
+# library — see the root .gitignore's !nix-signature-policy/Cargo.lock
 # exception) specifically so this check (and the standalone repo's own CI)
 # build against the exact dependency versions this prototype was tested
 # against, not whatever the registry resolves to today.
@@ -113,4 +113,4 @@ fi
 
 git commit -m "${COMMIT_MSG}"
 git push origin HEAD
-ok "Synced nix-pqc-cache-proxy to standalone — CI will run from main"
+ok "Synced nix-signature-policy to standalone — CI will run from main"

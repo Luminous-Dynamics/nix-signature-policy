@@ -1,6 +1,6 @@
 # Policy lifecycle, anti-rollback, and family recovery
 
-Status: implemented by Patch Set 9
+Status: implemented
 
 The typed policy core now treats cryptographic-family failure and policy
 migration as normal lifecycle events rather than exceptional edits to a fixed

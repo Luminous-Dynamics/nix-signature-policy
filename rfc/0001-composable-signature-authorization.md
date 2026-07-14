@@ -8,7 +8,7 @@ shepherd-leader: (to be appointed)
 related-issues:
   - https://github.com/NixOS/nix/issues/14451
   - https://github.com/NixOS/nix/pull/15926
-  - https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy
+  - https://github.com/Luminous-Dynamics/nix-signature-policy
 ---
 
 # Summary

@@ -1,7 +1,7 @@
 # Fuzzing and property hardening
 
-Patch Set 4 established two complementary hardening layers, and Patch Set 5
-extends the fuzz boundary to evidence parsing and offline replay:
+The harness establishes two complementary hardening layers, later extended
+to cover evidence parsing and offline replay:
 
 1. deterministic invariant tests in `tests/properties.rs`, which run in every
    ordinary `cargo test` and `nix flake check`; and

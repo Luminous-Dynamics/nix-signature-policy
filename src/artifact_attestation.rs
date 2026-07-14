@@ -1,7 +1,7 @@
 //! Deterministic hybrid attestations for arbitrary release artifacts.
 //!
-//! The intended Patch Set 7 use is to sign a small deterministic release
-//! statement which, in turn, binds a source archive and its file manifest.
+//! The intended use is to sign a small deterministic release statement
+//! which, in turn, binds a source archive and its file manifest.
 //! The attestation does not claim that the artifact is safe or correct; it
 //! proves that the named hybrid key signed the exact canonical payload and
 //! that the supplied artifact still matches the recorded SHA-256 and size.
@@ -23,6 +23,7 @@ use crate::keys::{PublicKey, SecretKey};
 
 pub const ARTIFACT_ATTESTATION_SCHEMA_VERSION: u32 = 1;
 pub const MAX_ARTIFACT_ATTESTATION_BYTES: u64 = 1024 * 1024;
+// Stable legacy domain retained so existing prototype attestations are not reinterpreted.
 const ATTESTATION_DOMAIN: &[u8] = b"nix-pqc-cache-proxy/artifact-attestation/v1\0";
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;

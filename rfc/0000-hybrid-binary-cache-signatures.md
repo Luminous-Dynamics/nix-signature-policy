@@ -5,7 +5,7 @@ author: Tristan Stoltz (tstoltz)
 co-authors: (find a buddy later to help out with the RFC)
 shepherd-team: (names, to be nominated and accepted by RFC steering committee)
 shepherd-leader: (name to be appointed by RFC steering committee)
-related-issues: https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy
+related-issues: https://github.com/Luminous-Dynamics/nix-signature-policy
 ---
 
 > **Status note (updated 2026-07-14): historical transport draft, not the
@@ -43,7 +43,7 @@ external verifier.
 ## Supporting prototype
 
 This RFC is backed by a working, tested prototype
-(https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy) that:
+(https://github.com/Luminous-Dynamics/nix-signature-policy) that:
 implements the exact narinfo fingerprint algorithm Nix uses (verified
 byte-for-byte against a real `cache.nixos.org`-signed narinfo and its real
 published Ed25519 key); dual-signs a local binary cache with a hybrid

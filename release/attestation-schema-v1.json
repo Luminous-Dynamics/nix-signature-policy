@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Luminous-Dynamics/nix-pqc-cache-proxy/release/attestation-schema-v1.json",
-  "title": "nix-pqc-cache-proxy hybrid artifact attestation",
+  "$id": "https://github.com/Luminous-Dynamics/nix-signature-policy/release/attestation-schema-v1.json",
+  "title": "nix-signature-policy hybrid artifact attestation",
   "type": "object",
   "additionalProperties": false,
   "required": ["bundle_schema_version", "payload_sha256", "payload", "attestation"],
