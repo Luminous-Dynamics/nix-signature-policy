@@ -278,7 +278,17 @@ fn endless_stderr_does_not_block_a_valid_decision() {
 #[test]
 fn invalid_utf8_stdout_is_rejected() {
     let dir = tmp();
-    let config = sh_config(r"printf '\xff\xfe'", dir.path());
+    // Write the exact invalid-UTF-8 bytes from Rust and `cat` them, rather
+    // than relying on a shell's `printf \xHH` hex-escape support: that's a
+    // bash-ism, not POSIX, and this fixture silently produced valid ASCII
+    // text (not the intended invalid bytes) under the dash-based /bin/sh
+    // on GitHub's ubuntu-latest runner, which then failed with
+    // MalformedResponseJson instead of the expected InvalidUtf8Response —
+    // a portability bug in the fixture, not in `caller.rs`.
+    let bytes_path = dir.path().join("invalid-utf8.bin");
+    std::fs::write(&bytes_path, [0xffu8, 0xfe]).unwrap();
+    let script = format!("cat {}", quote(&bytes_path));
+    let config = sh_config(&script, dir.path());
     assert_failure(&config, b"{}", CallerFailure::InvalidUtf8Response);
 }
 
