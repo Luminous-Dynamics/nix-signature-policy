@@ -34,9 +34,10 @@ merge status as current) refactors `PublicKey`/`SecretKey` into a
 `KeyType`-tagged, subclassable hierarchy so Nix's *existing* signature
 representation can carry more than Ed25519. It's extracted from
 [DeterminateSystems/nix-src#449](https://github.com/DeterminateSystems/nix-src/pull/449)
-(also open as of the same verification date), which adds ecdsa-p384 and
-ML-DSA-{44,65,87} concretely, gated behind an experimental `cnsa` feature,
-and demonstrates that a hybrid-signed
+(state re-verified 2026-07-15: **merged** 2026-05-20, on Determinate's own
+fork — this is what #15926 is extracting for upstream, not itself pending
+upstream), which adds ecdsa-p384 and ML-DSA-{44,65,87} concretely, gated
+behind an experimental `cnsa` feature, and demonstrates that a hybrid-signed
 path's `signatures` array is still just ordinary `"keyname:base64"` entries
 — no new narinfo field, longer signature blob, same shape.
 
