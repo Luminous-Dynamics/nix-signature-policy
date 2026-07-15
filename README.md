@@ -26,11 +26,21 @@ Start here:
 - [`docs/CORE_V1.md`](docs/CORE_V1.md) — frozen minimal interoperability profile;
 - [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md);
 - [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md);
+- [`docs/NIX_INTEGRATION_ARCHAEOLOGY.md`](docs/NIX_INTEGRATION_ARCHAEOLOGY.md) —
+  what the real Nix source actually shows about where this would integrate;
+- [`docs/CALLER_SAFETY.md`](docs/CALLER_SAFETY.md) — the hardened external-helper
+  invocation contract and its adversarial test coverage;
+- [`docs/PRIOR_ART_AND_DESIGN_DELTA.md`](docs/PRIOR_ART_AND_DESIGN_DELTA.md) —
+  the actual upstream discussion (#14451, #15926, the closed #202) and exactly
+  what this project adds on top of it;
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md);
 - [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md);
-- [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md);
 - [`docs/UPSTREAM_MINIMAL_SLICE.md`](docs/UPSTREAM_MINIMAL_SLICE.md);
 - [`docs/SECURITY_REVIEW_CHECKLIST.md`](docs/SECURITY_REVIEW_CHECKLIST.md);
+- [`docs/MAINTAINER_REVIEW.md`](docs/MAINTAINER_REVIEW.md) — a guided review
+  path, including the caller-safety evidence summary;
+- [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) — how this project got
+  here, phase by phase;
 - [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md).
 
 ## Trust model — read this first
@@ -542,6 +552,20 @@ merely to achieve algorithm agility. This project does not claim first PQ
 signature support for Nix. Its continuing contribution is narrower:
 machine-checkable exploration of the difference between any-valid
 verification and mandatory signature-group composition.
+
+[`docs/PRIOR_ART_AND_DESIGN_DELTA.md`](docs/PRIOR_ART_AND_DESIGN_DELTA.md)
+records that upstream discussion in more detail than the summary above —
+including where #14451's own author already flagged the exit-code
+ambiguity this project resolves, and a NixOS/nix maintainer's real,
+acknowledged-not-dismissed concern about point-wise vs. closure-wide trust.
+[`docs/NIX_INTEGRATION_ARCHAEOLOGY.md`](docs/NIX_INTEGRATION_ARCHAEOLOGY.md)
+is a read-only research pass against the real Nix source tracing the
+actual signature-admission call flow, with file:line citations, rather
+than assumption. [`docs/CALLER_SAFETY.md`](docs/CALLER_SAFETY.md) documents
+`src/caller.rs`, a hardened reference implementation of safely invoking an
+external authorization helper, adversarially tested in
+`tests/helper_process_hostility.rs` against hangs, crashes, malformed
+output, and orphaned processes.
 
 The six-layer model in
 [`docs/SIGNATURE_POLICY_MODEL.md`](docs/SIGNATURE_POLICY_MODEL.md) separates:
