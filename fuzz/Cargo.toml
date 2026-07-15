@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 nix-signature-policy = { path = ".." }
+base64 = "0.22"
 
 [[bin]]
 name = "narinfo_parse"
@@ -49,6 +50,20 @@ bench = false
 [[bin]]
 name = "authorization_protocol"
 path = "fuzz_targets/authorization_protocol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_protocol_decode"
+path = "fuzz_targets/raw_protocol_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_evidence_verify"
+path = "fuzz_targets/raw_evidence_verify.rs"
 test = false
 doc = false
 bench = false
