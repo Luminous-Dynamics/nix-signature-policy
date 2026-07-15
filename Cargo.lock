@@ -1050,6 +1050,7 @@ dependencies = [
  "criterion",
  "ed25519-dalek",
  "futures-util",
+ "libc",
  "ml-dsa",
  "rand 0.8.6",
  "reqwest",

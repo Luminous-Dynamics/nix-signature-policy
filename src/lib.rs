@@ -3,6 +3,7 @@
 //! narinfo/keys/proxy logic directly instead of shelling out to the binary.
 
 pub mod artifact_attestation;
+pub mod caller;
 pub mod commitment;
 pub mod conformance;
 pub mod core;

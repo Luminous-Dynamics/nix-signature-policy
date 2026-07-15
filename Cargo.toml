@@ -52,6 +52,9 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ed25519-dalek = "2"
+# Unix process-group signalling for src/caller.rs; the module is a Unix-only
+# reference implementation (matches Nix itself having no Windows target).
+libc = "0.2"
 # Pinned to match mycelix-crypto's own pin (this module was vendored from
 # there) -- not a hard requirement, just keeps the two in sync if either
 # gets bumped.

@@ -4,7 +4,7 @@ set -euo pipefail
 seconds="${FUZZ_SECONDS_PER_TARGET:-10}"
 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 
-for target in narinfo_parse policy_evaluator policy_adapters signature_codecs evidence_bundle; do
+for target in narinfo_parse policy_evaluator policy_adapters signature_codecs evidence_bundle authorization_protocol; do
   echo "== fuzz smoke: ${target} (${seconds}s) =="
   mkdir -p "fuzz/artifacts/${target}"
   cargo fuzz run "${target}" -- \
