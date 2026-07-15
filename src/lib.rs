@@ -18,6 +18,8 @@ pub mod policy;
 pub mod policy_adapters;
 pub mod protocol;
 pub mod proxy;
+pub mod raw_evidence;
+pub mod raw_protocol;
 pub mod receipt;
 pub mod registry;
 pub mod state;

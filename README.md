@@ -30,6 +30,9 @@ Start here:
   what the real Nix source actually shows about where this would integrate;
 - [`docs/CALLER_SAFETY.md`](docs/CALLER_SAFETY.md) — the hardened external-helper
   invocation contract and its adversarial test coverage;
+- [`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md) — verifying
+  real narinfo `Sig:` entries on current Nix without depending on `#15926`,
+  validated against a real Determinate Nix build;
 - [`docs/PRIOR_ART_AND_DESIGN_DELTA.md`](docs/PRIOR_ART_AND_DESIGN_DELTA.md) —
   the actual upstream discussion (#14451, #15926, the closed #202) and exactly
   what this project adds on top of it;
