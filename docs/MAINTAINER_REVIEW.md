@@ -43,26 +43,73 @@ In addition to the above:
 2. Inspect `src/narinfo.rs` for fingerprint canonicalization and parser bounds.
 3. Inspect `src/proxy.rs` and `tests/proxy_e2e.rs` for upstream containment,
    streaming, overload, and failure behavior.
-4. Run both real-Nix lanes:
+4. Inspect `src/caller.rs`, `docs/CALLER_SAFETY.md`, and
+   `tests/helper_process_hostility.rs` for the external-helper invocation
+   boundary — see "Caller-safety evidence" below for what this proves and
+   what it deliberately doesn't attempt.
+5. Run both real-Nix lanes:
 
 ```console
 nix run .#real-nix-e2e-stable
 nix run .#real-nix-e2e-latest
 ```
 
-5. Run the one-command evidence-producing demonstration:
+6. Run the one-command evidence-producing demonstration:
 
 ```console
 nix run .#demo -- --out-dir demo-output
 ```
 
-6. Build the source release twice and compare it:
+7. Build the source release twice and compare it:
 
 ```console
 nix run .#release-source -- --out-dir dist-a
 nix run .#release-source -- --out-dir dist-b
 diff -ru dist-a dist-b
 ```
+
+## Caller-safety evidence
+
+The likely first question about any external-verifier proposal
+(`docs/PRIOR_ART_AND_DESIGN_DELTA.md` traces this back to the original
+[NixOS/nix#14451](https://github.com/NixOS/nix/issues/14451) discussion
+itself) is: what happens when the configured helper process is hung,
+crashed, malicious, or just buggy? This is what's actually verified, not
+asserted, for that boundary:
+
+- 23 adversarial process-invocation tests (`tests/helper_process_hostility.rs`)
+  covering missing/non-executable helpers, crashes, signal termination,
+  timeouts, output that fills a pipe buffer before the process exits (both
+  stdout and stderr), malformed/duplicate-keyed/multi-document/oversized
+  JSON, mismatched contract versions, well-formed output paired with an
+  unexpected exit code, orphaned grandchild processes, environment and
+  working-directory isolation, a bounded excessive-forking simulation, and
+  that repeated/concurrent invocations stay independently bounded.
+- Every one of those resolves to non-admission under authoritative
+  semantics — a caller failure and a helper's own refusal decision are
+  distinguished for diagnostics (`InvocationOutcome::Failure` vs.
+  `InvocationOutcome::Decision(.. Refuse)`), but neither can produce
+  acceptance.
+- Fuzz coverage for the request-decoding boundary itself
+  (`fuzz/fuzz_targets/authorization_protocol.rs`), on top of the five
+  targets already covering the parser, evaluator, and adapters.
+- No shell, no inherited environment (`env_clear()`, opt-in allowlist
+  only, no `PATH`), no inherited working directory.
+- Concurrent, independently-bounded stdout/stderr draining armed before
+  any wait/poll loop, so a helper that fills a pipe buffer before exiting
+  cannot deadlock the caller — see `docs/CALLER_SAFETY.md` for why a
+  naive `try_wait()`-then-read design can.
+- Whole-process-group cleanup (not just the direct child) on timeout or
+  output overflow, with the direct child always reaped afterward.
+- Measured (not estimated) helper invocation overhead: 1755 cold-start
+  samples of the release binary, p50 1.83ms / p99 4.66ms / max 7.15ms,
+  under real background load, full methodology and reproduction command
+  in `docs/CALLER_SAFETY.md`.
+- `cargo test --workspace`: 171 tests total, all passing.
+
+`docs/CALLER_SAFETY.md` maps this against the original 18-item hostile-
+helper brainstorm that motivated it, including what's deliberately out of
+scope for this layer (OS-level sandboxing, a literal fork bomb) and why.
 
 ## Questions reviewers should challenge
 
