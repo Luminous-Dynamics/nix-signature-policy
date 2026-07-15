@@ -20,10 +20,18 @@ use nix_signature_policy::caller::{self, CallerConfig, CallerFailure, Invocation
 use nix_signature_policy::integration::AdmissionDecision;
 
 const SH: &str = "/bin/sh";
-/// Short enough that hostility tests finish quickly; long enough that a
-/// well-behaved helper (including the real binary under normal load) never
-/// spuriously trips it.
-const TEST_TIMEOUT: Duration = Duration::from_millis(500);
+/// The default for fixtures that are *not* specifically testing timeout
+/// behavior (those set their own short, explicit override instead — see
+/// e.g. `hung_helper_is_killed_and_its_eventual_output_is_never_trusted`).
+/// Deliberately generous rather than "as short as possible": on a heavily
+/// loaded machine, even a trivial `/bin/sh -c 'kill -SEGV $$'` fixture may
+/// not get scheduled within a few hundred milliseconds, which would
+/// misclassify a crash as a timeout — a test-harness artifact, not a
+/// `caller.rs` bug. Observed directly under real load on a shared
+/// development machine: `crashing_helper_is_unexpected_exit_status` failed
+/// with `Timeout` instead of `UnexpectedExitStatus` at 500ms, and passed
+/// reliably once raised.
+const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn tmp() -> tempfile::TempDir {
     tempfile::tempdir().expect("create tempdir")

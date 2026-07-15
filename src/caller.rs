@@ -152,8 +152,11 @@ pub enum CallerFailure {
 pub enum InvocationOutcome {
     /// The helper produced a well-formed, trusted response. Inspect
     /// `AuthorizationResponse::decision` for the actual accept/refuse
-    /// outcome.
-    Decision(AuthorizationResponse),
+    /// outcome. Boxed: `AuthorizationResponse` carries nested policy/
+    /// registry decision detail and is far larger than `CallerFailure`,
+    /// and clippy's `large_enum_variant` lint (correctly) objects to
+    /// that size disparity on the unboxed enum.
+    Decision(Box<AuthorizationResponse>),
     /// No trustworthy decision was obtained.
     Failure(CallerFailure),
 }
@@ -362,7 +365,7 @@ fn parse_response(bytes: &[u8]) -> InvocationOutcome {
         return InvocationOutcome::Failure(CallerFailure::ContractVersionMismatch);
     }
 
-    InvocationOutcome::Decision(response)
+    InvocationOutcome::Decision(Box::new(response))
 }
 
 #[cfg(test)]
