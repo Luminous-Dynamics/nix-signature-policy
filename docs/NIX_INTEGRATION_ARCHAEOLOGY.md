@@ -431,22 +431,43 @@ default or requires explicit opt-in, and is logged either way.
 
 ### Conclusion
 
-**A small internal data-flow change is needed before the experiment.**
+**A small internal data-flow change is needed before the experiment —
+*conditionally*, depending on v1 scope. Under a narrower, arguably better
+v1 scope, it isn't.**
 
-The raw-evidence experiment against input-addressed substitution is
-otherwise clean — signatures, fingerprint, and the enforcement gate
-(`addToStore`) all exist today with no dependency on #15926. But two
-concrete gaps block a *faithful* minimal experiment, not just future
-polish: the CA-path short-circuit inside `checkSignatures()` means the
-existing gate structurally cannot express "also require hook approval for
-CA paths" without either a second hook site or a change to
-`checkSignatures`/`pathInfoIsUntrusted`; and `addToStore` doesn't carry
-substituter identity, which the already-recommended candidate/substituter
-scoping semantics depend on knowing. Neither finding suggests the choke
-point is wrong — `addToStore` remains the right place — but an experiment
-that only wires into the existing gate as-is would silently not cover CA
-paths and would lack the context to implement the recommended
-per-candidate/per-substituter semantics correctly.
+The substituter-identity gap above only matters if v1 requires *policy*
+that varies by substituter. It does not require that. Re-read
+`substitution-goal.cc:108-121` directly: `pathInfoIsUntrusted(*info)` is
+already called once per loop iteration, once per substituter, with that
+substituter's own candidate evidence (`*info`, carrying that candidate's
+own raw `.sigs`) in scope. A hook plugged into this exact call site
+inherits correct per-candidate, try-the-next-substituter-on-refusal
+behavior **for free from the loop's existing structure — no explicit
+substituter-identity parameter needs to be threaded anywhere — as long as
+the policy itself is global** (the same evaluation applied uniformly to
+whichever candidate's evidence is currently in scope, not "policy X for
+substituter A, policy Y for substituter B"). This matches both current
+Nix (`trusted-public-keys` is already global) and #14451's own original
+shape (one configured `trusted-signatures-command`, not a per-substituter
+one). Verified directly against the loop, not just reasoned about.
+
+So: **a v1 scoped as one global provider, evaluating raw signatures for
+input-addressed paths only, needs no substituter-identity plumbing at
+all** — that data-flow gap becomes irrelevant, not because the finding
+was wrong, but because it was only a blocker for a more ambitious
+per-substituter-policy design this project doesn't need to attempt first.
+The CA-path short-circuit remains a real, unconditional gap regardless of
+scope — it isn't scope-dependent the way the substituter-identity finding
+was, and v1 should explicitly exclude CA paths rather than assume the
+existing gate covers them (see the decision table above, unchanged).
+
+Revised bottom line: **current Nix can support a minimal, global,
+input-addressed-only raw-evidence authorization experiment cleanly, with
+no dependency on #15926 and no data-flow change required** — provided v1
+deliberately does not attempt per-substituter policy, CA-path coverage,
+or realisation coverage. Those three remain real, identified gaps; they
+just don't have to be closed before a first experiment, because a first
+experiment doesn't need to attempt them.
 
 ## Unresolved questions
 
