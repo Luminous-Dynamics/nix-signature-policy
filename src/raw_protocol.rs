@@ -48,6 +48,7 @@ pub enum RawProtocolErrorCode {
     InvalidRequestJson,
     FingerprintTooLarge,
     TooManySignatureEntries,
+    TooManyVerificationKeys,
     DuplicateVerificationKeyName,
     ResponseTooLarge,
     ResponseSerializationFailed,
@@ -135,6 +136,9 @@ pub fn decode_and_authorize_raw(
     .map_err(|error| match error {
         RawEvidenceError::TooManyEntries => {
             RawProtocolErrorResponse::new(RawProtocolErrorCode::TooManySignatureEntries)
+        }
+        RawEvidenceError::TooManyVerificationKeys => {
+            RawProtocolErrorResponse::new(RawProtocolErrorCode::TooManyVerificationKeys)
         }
         RawEvidenceError::DuplicateVerificationKeyName(name) => {
             RawProtocolErrorResponse::with_detail(

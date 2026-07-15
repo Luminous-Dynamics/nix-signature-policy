@@ -75,6 +75,14 @@ use crate::policy::{AlgorithmId, SignatureCandidate, VerificationOutcome};
 /// unbounded work ahead of the evaluator's own limits.
 pub const MAX_RAW_SIGNATURE_ENTRIES: usize = 128;
 
+/// Maximum verification-key registry entries accepted. Without this,
+/// [`verify_raw_evidence`] is `pub fn` and callable directly (not only
+/// through `raw_protocol.rs`'s overall request-byte cap), so an
+/// unbounded `verification_keys` slice would make the duplicate-name
+/// pre-scan and the per-signature registry lookup both unbounded, and
+/// could pre-allocate an oversized `HashSet` before any check ran.
+pub const MAX_VERIFICATION_KEYS: usize = 128;
+
 /// Bound on the diagnostic "claimed key name" text kept for an entry that
 /// fails to parse even as `"name:base64"` -- purely for bounded, readable
 /// diagnostics; never used for trust (see [`verify_one`]'s doc).
@@ -125,6 +133,8 @@ pub struct VerificationKeyEntry {
 pub enum RawEvidenceError {
     /// More entries than [`MAX_RAW_SIGNATURE_ENTRIES`] were supplied.
     TooManyEntries,
+    /// More entries than [`MAX_VERIFICATION_KEYS`] were supplied.
+    TooManyVerificationKeys,
     /// `verification_keys` had two entries sharing a `key_name`. Rejected
     /// as invalid configuration rather than guessed at dispatch time --
     /// see the module doc's "no algorithm tag on the wire" section for why
@@ -144,6 +154,9 @@ pub fn verify_raw_evidence(
 ) -> Result<Vec<SignatureCandidate>, RawEvidenceError> {
     if signatures.len() > MAX_RAW_SIGNATURE_ENTRIES {
         return Err(RawEvidenceError::TooManyEntries);
+    }
+    if verification_keys.len() > MAX_VERIFICATION_KEYS {
+        return Err(RawEvidenceError::TooManyVerificationKeys);
     }
 
     let mut seen_names = HashSet::with_capacity(verification_keys.len());
@@ -547,6 +560,26 @@ mod tests {
 
         let result = verify_raw_evidence(message, &entries, &[]);
         assert_eq!(result.unwrap_err(), RawEvidenceError::TooManyEntries);
+    }
+
+    #[test]
+    fn too_many_verification_keys_is_rejected() {
+        let message = b"1;/nix/store/abc-foo;sha256:def;120;";
+        let registry: Vec<_> = (0..MAX_VERIFICATION_KEYS + 1)
+            .map(|i| {
+                raw_key(
+                    &format!("key-{i}"),
+                    "ed25519",
+                    &[0u8; ED25519_PUBLIC_KEY_LEN],
+                )
+            })
+            .collect();
+
+        let result = verify_raw_evidence(message, &[], &registry);
+        assert_eq!(
+            result.unwrap_err(),
+            RawEvidenceError::TooManyVerificationKeys
+        );
     }
 
     #[test]
