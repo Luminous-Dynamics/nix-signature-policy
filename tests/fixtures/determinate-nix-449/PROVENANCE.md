@@ -184,3 +184,42 @@ algorithm (see `interop-fixture-2.narinfo` above: two `Sig:` lines, no
 `Sig-PQC:`). `Sig-PQC:` should be treated as this project's own
 historical/prototype-specific field, not a claim about real narinfo wire
 format. (Tracked as a separate, out-of-scope-for-this-series cleanup.)
+
+## CI verification status
+
+Standalone repository (`Luminous-Dynamics/nix-signature-policy`),
+branch `sync-composable-policy-framework`, commit
+`c3af364c340268081ea794538d9823226dd2924c` — the code/fixture/test
+state CI actually verified. (This documentation section was added in
+a later, docs-only commit on top of that verified commit; it changes
+no code, fixture, or test file, so the CI result below still
+describes the current state faithfully. See the repository's
+immutable evidence tag, if one has been cut, for the exact final
+commit this record was frozen at.)
+
+CI run: [29455601462](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/runs/29455601462)
+(triggered manually via `workflow_dispatch`, since this workflow only
+auto-triggers on `main`/pull requests).
+
+| Lane | Result |
+|---|---|
+| Maintainer real-Nix demonstration | ✅ pass |
+| Real Nix proof (stable) | ✅ pass |
+| Real Nix proof (latest) | ✅ pass |
+| Nix flake check (ubuntu-latest) | ✅ pass |
+| Deterministic source release | ✅ pass |
+| Locked dependency audit | ✅ pass |
+| Current stable Rust forward compatibility | ✅ pass |
+| Bounded fuzz smoke (all 8 targets, incl. the 2 new raw-evidence targets) | ✅ pass |
+| Nix flake check (macos-latest) | ❌ fail |
+
+All relevant Linux, interoperability, release, audit and fuzz lanes
+pass. The existing macOS flake-check failure remains a separately
+tracked LLVM bitcode-version incompatibility
+(`LLVM error: Unknown attribute kind (102) (Producer: 'LLVM21.1.8'
+Reader: 'LLVM 19.1.7-rust-1.86.0-stable')`, in the `alloca` crate's
+build) and **predates the raw-evidence adapter** — confirmed
+byte-identical across three separate CI runs on three different
+commits during this work, none of which touched anything on the
+macOS build path. It is tracked as a separate, deferred repository-
+hygiene item, not folded into this evidence.
