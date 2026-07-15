@@ -2,13 +2,15 @@
 
 **Status: non-normative research snapshot, not a specification.** This
 document records what a direct reading of the real Nix source and its
-public process actually shows, as of one examination pass. It exists to
-ground Phase B design discussion in evidence rather than assumption. It is
-not a commitment to any particular mechanism, and several open questions
-below are marked unresolved rather than guessed at. Re-verify any claim
-here against current upstream state before relying on it in an upstream
-conversation — the source revision and date are pinned below precisely so
-that staleness is checkable.
+public process actually shows, across two examination passes (an initial
+pass and a narrower follow-up closing four specific open questions, both
+against the same source revision). It exists to ground Phase B design
+discussion in evidence rather than assumption. It is not a commitment to
+any particular mechanism, and several open questions below are marked
+unresolved rather than guessed at. Re-verify any claim here against
+current upstream state before relying on it in an upstream conversation —
+the source revision and date are pinned below precisely so that staleness
+is checkable.
 
 - **Source examined**: `https://github.com/NixOS/nix`, commit
   `40f375fac1af1a432cbf48dfd15468b1921d458c` (shallow clone off the
@@ -257,6 +259,14 @@ above:
   *provided* the candidate/substituter/goal-scoping questions above are
   resolved deliberately rather than left implicit.
 
+  **Updated by the follow-up pass below**: two more concrete items belong
+  in this list, not just "provided" caveats — threading substituter
+  identity into `addToStore()` (or `ValidPathInfo`) so the hook can know
+  which substituter offered a candidate, and a decision on whether the
+  CA-path short-circuit in `checkSignatures()` needs a second hook site
+  or a change to that function itself. See "Follow-up pass" for why these
+  aren't optional polish.
+
 ### RFC requirement
 
 `CONTRIBUTING.md` does not impose a hard "RFC required" gate. It
@@ -269,32 +279,193 @@ on #14451 (or a closely linked new issue) before a PR, rather than
 assuming a formal RFC is required — though a maintainer could still
 request one once a concrete diff exists.
 
+## Follow-up pass: closing four open questions
+
+A second, narrower read-only pass against the same clone and commit
+(`40f375fac1af1a432cbf48dfd15468b1921d458c`, same date, no new source
+state to pin) resolved four of the items the first pass left open. All
+citations below are new evidence from this pass; the most consequential
+ones were independently re-verified line-for-line against the clone
+before being written up here.
+
+### 1. Content-addressed paths and realisations — resolved, and it's a real gap
+
+**`ValidPathInfo::checkSignatures()` itself short-circuits for CA paths**,
+before the first pass's finding about `pathInfoIsUntrusted` even comes
+into play:
+
+```cpp
+// src/libstore/path-info.cc:124-133
+size_t ValidPathInfo::checkSignatures(const StoreDirConfig & store, const PublicKeys & publicKeys) const
+{
+    if (isContentAddressed(store))
+        return maxSigs;          // maxSigs = numeric_limits<size_t>::max()
+
+    size_t good = 0;
+    for (auto & sig : sigs)
+        if (checkSignature(store, publicKeys, sig))
+            good++;
+    return good;
+}
+```
+
+CA paths never reach the signature loop at all — this function reports
+"maximally satisfied" unconditionally, so **every** call site gating on
+`pathInfoIsUntrusted` (the substituter loop, `addToStore`) is bypassed
+identically for CA paths. This is baked into the shared primitive, not a
+caller-level gap to patch individually. `isContentAddressed()`
+(`path-info.cc:108-121`) checks only that the path's own name matches
+what its declared content-addressing method computes — **byte-integrity/
+self-consistency, not authorization and not derivation-output binding**.
+A CA path can pass this while being an entirely unauthorized but
+internally-consistent artifact.
+
+**Realisations do not get the CA shortcut** — `UnkeyedRealisation::
+checkSignatures` (`realisation.cc:61-69`) always loops over
+`.signatures`, with a `// FIXME: Maybe we should return maxSigs if...
+input-addressed` comment showing the authors considered adding the same
+shortcut here and didn't. But realisation registration
+(`LocalStore::registerDrvOutput`, `local-store.cc:654-661`, gated by
+`Xp::CaDerivations`) is a **structurally separate entry point from
+`addToStore`** — a hook wired only into `addToStore`/`pathInfoIsUntrusted`
+would not cover it. Verified: the daemon's `RegisterDrvOutput` RPC handler
+(`daemon.cc:979-982`) calls the single-argument, no-signature-check
+overload of `registerDrvOutput` unconditionally — every other operation in
+`daemon.cc` gates signature-skipping on `trusted`, this one has no such
+gate at all. Possibly intentional (realisations are usually build outputs,
+trusted by construction like local builds generally), but structurally
+inconsistent with the rest of the file, and worth flagging to a maintainer
+rather than assuming either way.
+
+### 2. Evidence at the final gate — resolved, and it's a real gap
+
+All callers of `addToStore(info, source, repair, checkSigs)`:
+`local-store.cc:1046` (the impl), `restricted-store.cc:215-218`,
+`legacy-ssh-store.cc:151`, `remote-store.cc:447`,
+`binary-cache-store.cc:311,627`, `daemon.cc:510,935,955` (gated by
+`dontCheckSigs`), `store-api.cc:961`, `export-import.cc:89`. Two callers —
+`nix-store.cc:1075`, `tarball.cc:87` — hardcode `NoCheckSigs`
+unconditionally; both are local-import operations with a different trust
+model (the user directly supplies the content).
+
+**`addToStore`'s own signature carries no substituter-identity
+parameter.** Raw signatures and the fingerprint *are* available via
+`info`, but the substituter identity the first pass found in the
+substitution-goal caller's local scope (`sub->config.getHumanReadableURI()`)
+is not threaded into `addToStore()` at all. This is the concrete
+data-flow gap the candidate/substituter/goal-scoping semantic model
+recommended earlier in this document actually depends on: knowing *which*
+substituter offered a refused candidate, so that refusing it doesn't
+necessarily block a different substituter's independently-adequate
+evidence for the same path. Closing this gap means either adding a
+parameter to `addToStore` (touches all ~8 implementations/call sites
+above) or threading substituter identity through `ValidPathInfo` itself
+(touches a much more widely-shared data structure) — a real, scoped code
+change, not hypothetical future plumbing.
+
+### 3. Trusted-user and trusted-store bypasses — resolved, not a gap
+
+`daemon.cc:494`'s `dontCheckSigs` gate requires the connection already be
+`trusted`, and `trusted` comes from Nix's own long-standing
+`trusted-users`/`allowed-users` multi-user daemon model
+(`daemon.cc:221`, used throughout the file for repair mode, GC-root
+visibility, and restricted-setting overrides — infrastructure that
+predates this discussion entirely). **This is an intentional, established
+administrative trust boundary, not an accidental bypass relative to
+authoritative policy.** Recommendation: a first proposal should explicitly
+*exclude* trusted-daemon-client ingress from scope, documented as
+inheriting Nix's existing multi-user trust model. "Enforce for trusted
+ingress too" is a coherent later option for operators who want the
+boundary to apply even to locally-trusted clients, but is different scope
+from the substituter-facing proposal and shouldn't be bundled into the
+first ask.
+
+### 4. Functional-test precedent — resolved
+
+- **`tests/functional/post-hook.sh`** — the actual post-build-hook test
+  (not `post-build-hook.sh` as guessed in the first pass); real
+  `nix-build --post-build-hook <script>` against a throwaway
+  `$TEST_ROOT` store, shell-level assertions.
+- **`tests/functional/signing.sh`** — real keypairs via
+  `nix-store --generate-binary-cache-key`, asserts on `nix path-info
+  --json` and `nix store verify --sigs-needed N` behavior via an
+  `expect <code> <cmd>` idiom.
+- **`tests/functional/binary-cache.sh:232` vs. `:236`** — direct existing
+  precedent for the exact property this project's semantic model depends
+  on:
+  ```sh
+  (! nix-store -r "$outPath" --substituters "file://$cacheDir2" --trusted-public-keys "$publicKey")
+  # ... a second, adequately-evidenced substituter added:
+  nix-store -r "$outPath" --substituters "file://$cacheDir2 file://$cacheDir" --trusted-public-keys "$publicKey"
+  ```
+  One substituter's evidence is rejected; a second substituter with
+  adequate evidence for the same path still succeeds — already tested
+  today, independent of this proposal, and a direct pattern to extend
+  rather than invent.
+- `tests/functional/ca/signatures.sh` and `ca/substitute.sh` exist and are
+  the natural place to extend CA-specific coverage once (1) above is
+  acted on. No single `require-sigs`-specific test file — the flag is
+  exercised across 13 files, consistent with it being cross-cutting.
+
+**Smallest harness shape**: extend `binary-cache.sh`'s multi-substituter
+pattern with a hook script analogous to `post-hook.sh`'s
+`--post-build-hook <script>` wiring, using `signing.sh`'s
+`expect <code>` idiom, to prove: (a) hook absent → behavior identical to
+today's `binary-cache.sh`; (b) hook always-refuses → a
+`trusted-public-keys`-valid path is still rejected in authoritative mode;
+(c) hook missing/crashing → rejection, not silent accept; (d) the exact
+`cacheDir2`-then-`cacheDir` pattern, hook refusing only `cacheDir2`'s
+candidate → `cacheDir` still succeeds; (e) hook governs one substituter,
+a second ungoverned substituter is available → fallback is refused by
+default or requires explicit opt-in, and is logged either way.
+
+### Decision table
+
+| Question | Observed behavior | Security implication | Initial-scope recommendation |
+|---|---|---|---|
+| CA paths | `checkSignatures()` returns `maxSigs` unconditionally for any content-addressed path, before the signature loop ever runs | A hook at the existing gate is fully bypassed for CA paths — they get byte-integrity, never authorization, under the current primitive | State CA paths out of scope for v1 explicitly, or add a second, distinct hook path — do not assume the input-addressed gate covers them |
+| Realisations | Structurally separate entry point (`registerDrvOutput`, gated by `Xp::CaDerivations`); real signature checking with no CA shortcut, but the daemon RPC bypasses it unconditionally | A hook covering only `addToStore` misses realisation registration entirely; the daemon-RPC gap may allow unsigned realisation registration regardless of trust | Scope realisations explicitly in or out for v1; flag the daemon RPC gap for a maintainer to confirm intentional |
+| Evidence at `addToStore` | Raw signatures + fingerprint present in `info`; substituter identity is not part of `addToStore`'s signature, only available in the substitution-goal caller's local scope | A hook needing "which substituter offered this" (for the candidate/substituter-scoping semantics already recommended) needs new plumbing, not just a new check | Confirms a small, scoped internal data-flow change is needed if per-substituter context matters to the hook design |
+| Trusted-user bypass | `dontCheckSigs` requires the connection already be `trusted` per Nix's pre-existing multi-user daemon model | Intentional, established boundary, not a new gap this proposal introduces | Exclude from v1 scope explicitly; document as inherited; offer "enforce for trusted ingress too" as a distinct future option |
+| Test precedent | `binary-cache.sh` already tests exactly the multi-substituter-fallback property this design depends on; `post-hook.sh` shows the CLI-wiring pattern; `signing.sh` shows the failure-assertion idiom | Strong structural precedent exists — a hook's test suite extends established patterns, not a new methodology | Model functional tests directly on `binary-cache.sh` + `post-hook.sh` |
+
+### Conclusion
+
+**A small internal data-flow change is needed before the experiment.**
+
+The raw-evidence experiment against input-addressed substitution is
+otherwise clean — signatures, fingerprint, and the enforcement gate
+(`addToStore`) all exist today with no dependency on #15926. But two
+concrete gaps block a *faithful* minimal experiment, not just future
+polish: the CA-path short-circuit inside `checkSignatures()` means the
+existing gate structurally cannot express "also require hook approval for
+CA paths" without either a second hook site or a change to
+`checkSignatures`/`pathInfoIsUntrusted`; and `addToStore` doesn't carry
+substituter identity, which the already-recommended candidate/substituter
+scoping semantics depend on knowing. Neither finding suggests the choke
+point is wrong — `addToStore` remains the right place — but an experiment
+that only wires into the existing gate as-is would silently not cover CA
+paths and would lack the context to implement the recommended
+per-candidate/per-substituter semantics correctly.
+
 ## Unresolved questions
 
 Marked explicitly rather than guessed at — this list is a feature of the
-archaeology, not a gap to apologize for:
+archaeology, not a gap to apologize for. Items resolved by the follow-up
+pass above have been removed from this list; what remains:
 
-- Whether content-addressed paths meaningfully bypass the
-  `pathInfoIsUntrusted` gate, or simply don't need it as much by
-  construction (`isContentAddressed` appears at `substitution-goal.cc:85`;
-  its interaction with signature checking was not traced to a conclusion).
-- Realisation registration (`LocalStore::realisationIsUntrusted`,
-  `local-store.cc:1041-1043`, exists in parallel to the path check) and
-  whether it needs independent treatment in any hook design.
-- Whether raw signature bytes remain available at every one of `addToStore`'s
-  call sites (not just the substituter-loop path), or whether some callers
-  reach it with less context.
-- The closest Nix functional-test precedent to model a hook's test suite
-  on — a `post-build-hook` functional test almost certainly exists given
-  the feature is documented, but wasn't located in this pass.
-- Trusted-user and trusted-store bypass paths beyond the ones already
-  found (daemon `dontCheckSigs` requires the client already be `trusted`;
-  is there a broader trusted-user escape hatch elsewhere in the config
-  surface?).
 - Whether helper results should be cached, and if so, keyed and
-  invalidated how — not evaluated in this pass at all.
-- Substituter fallback across different trust scopes, beyond the candidate/
-  substituter/goal-scoping questions already raised above.
+  invalidated how — not evaluated in either pass.
+- Substituter fallback across different trust scopes, beyond the
+  candidate/substituter/goal-scoping questions already raised.
+- Whether the `daemon.cc:979` `RegisterDrvOutput` RPC's unconditional
+  no-signature-check is intentional (matches "realisations are trusted
+  build output" reasoning) or an oversight relative to the rest of
+  `daemon.cc`'s consistent `trusted`-gating — needs a maintainer's answer,
+  not another archaeology pass.
+- Whether closing the CA-path gap should mean a second hook site, or a
+  change to `checkSignatures`/`pathInfoIsUntrusted` themselves — both are
+  plausible, neither has been designed.
 
 ## Non-normative status
 
