@@ -322,6 +322,17 @@ The exact boundary—raw signatures versus normalized verified observations,
 global versus per-substituter scope, and one-shot versus persistent
 communication—remains a subject for upstream discussion.
 
+## A speculative longer-term note
+
+The shape here — a policy decision point separated from an enforcement
+point, evaluating scoped evidence rather than granting implicit, permanent
+trust — composes naturally with a broader resource/subject/policy-
+decision-point model in the style of NIST SP 800-207 ("zero trust
+architecture"), if this pattern ever proves useful beyond Nix artifact
+admission specifically. That is not proposed here, has no bearing on the
+Nix integration, and is recorded only so the idea isn't lost — not as a
+roadmap, a rename, or a commitment to build it.
+
 ## Security status
 
 The project has extensive testing, conformance vectors, fuzz targets, bounded
