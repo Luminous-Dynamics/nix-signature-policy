@@ -6,7 +6,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGETS = ("narinfo_parse", "policy_evaluator", "policy_adapters", "signature_codecs", "evidence_bundle", "authorization_protocol")
+TARGETS = ("narinfo_parse", "policy_evaluator", "policy_adapters", "signature_codecs", "evidence_bundle", "authorization_protocol", "raw_protocol_decode", "raw_evidence_verify")
 
 errors: list[str] = []
 manifest = (ROOT / "fuzz/Cargo.toml").read_text(encoding="utf-8")
