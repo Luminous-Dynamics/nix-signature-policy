@@ -1,6 +1,5 @@
 [package]
 name = "nix-signature-policy"
-default-run = "nix-pqc-cache-proxy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"

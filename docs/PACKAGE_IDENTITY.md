@@ -6,7 +6,15 @@ tooling use the durable project identity `nix-signature-policy`.
 The executable `nix-pqc-cache-proxy` is intentionally retained. It is the
 historical transport and deployment experiment described in the README, and
 renaming it would add churn without improving the generalized authorization
-core. `cargo run` continues to select that binary through `default-run`.
+core.
+
+`default-run` was removed 2026-07-16: with eight binaries in this crate
+covering unrelated things (the historical proxy, the raw-evidence adapter,
+policy conformance/evidence, attestation, trust state), no single one is
+the canonical "just run it" entry point, and defaulting to the historical
+proxy made it look like one. Bare `cargo run` now fails closed and lists
+every binary; every invocation in this repository's own docs and scripts
+names its binary explicitly with `--bin`.
 
 Two internal hybrid-attestation domain strings also retain the old
 `nix-pqc-cache-proxy/...` prefix. Those byte strings are cryptographic protocol

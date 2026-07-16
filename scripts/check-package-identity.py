@@ -3,7 +3,7 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 cargo=(root/'Cargo.toml').read_text()
 assert 'name = "nix-signature-policy"' in cargo
-assert 'default-run = "nix-pqc-cache-proxy"' in cargo
+assert 'default-run' not in cargo, "default-run was deliberately removed 2026-07-16 (see docs/PACKAGE_IDENTITY.md) -- no single binary should look canonical"
 assert 'name = "nix_signature_policy"' in cargo
 lock=(root/'Cargo.lock').read_text(); assert 'name = "nix-signature-policy"\nversion = "0.1.0"' in lock
 for p in [*root.joinpath('src').rglob('*.rs'),*root.joinpath('tests').rglob('*.rs'),*root.joinpath('fuzz').rglob('*.rs'),*root.joinpath('examples').rglob('*.rs'),*root.joinpath('benches').rglob('*.rs')]:

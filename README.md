@@ -2,90 +2,89 @@
 
 [![CI](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml/badge.svg)](https://github.com/Luminous-Dynamics/nix-signature-policy/actions/workflows/ci.yml)
 
-Reference implementation and conformance suite for composable,
-downgrade-resistant signature authorization in Nix.
+**The problem this investigates.** Nix's binary-cache trust model accepts
+any *one* valid signature from a trusted key. That's sufficient for "was
+this signed by someone I trust," but it can't express "require both a
+classical and a post-quantum signature," "require a quorum of independent
+signers," or other composed authorization rules — and today there's no
+Nix-side interface for a pluggable policy to make that decision. This
+repository is a reference implementation and conformance suite exploring
+what such an interface could look like, in support of
+[NixOS/nix#14451](https://github.com/NixOS/nix/issues/14451).
 
-The durable contribution is a transport-neutral policy layer that begins after
-cryptographic signature verification and decides whether trusted evidence is
-sufficient to authorize a Nix store path. It supports typed signer groups,
-thresholds, identity binding, independent authorities, cryptographic-family
-diversity, lifecycle and recovery states, rollback protection, explicit
-integration modes, and deterministic decision evidence.
+**What was actually demonstrated.** A transport-neutral authorization core
+(`core-v1`) that composes typed signer evidence into thresholds,
+independent-authority and cryptographic-family requirements, rollback
+protection, and deterministic decision evidence — plus a bridging adapter
+that independently verifies real Ed25519 and ML-DSA-65 `Sig:` entries
+produced by a real, independently-built multi-algorithm Nix
+([DeterminateSystems/nix-src#449](https://github.com/DeterminateSystems/nix-src/pull/449)),
+so the core can be exercised against real signature bytes without depending
+on [NixOS/nix#15926](https://github.com/NixOS/nix/pull/15926) landing
+first. Full detail:
+[`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md).
 
-Ed25519 plus ML-DSA remains an important migration profile, but neither PQC nor
-the historical `Sig-PQC:` field is privileged by the architecture. The
-`nix-pqc-cache-proxy` binary remains as a compatibility and deployment
-experiment; it is not the normative upstream design.
+**Proposed vs. implemented.** The authorization core, its adapters, and the
+raw-signature verifier are implemented and tested here, against real Nix
+output. The corresponding Nix-side integration — an actual invocation hook
+at Nix's admission boundary — is **not** implemented; see
+[`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md) and
+[`docs/NIX_INTEGRATION_ARCHAEOLOGY.md`](docs/NIX_INTEGRATION_ARCHAEOLOGY.md).
+
+**What this does not ask of upstream Nix.** No new narinfo signature field,
+no per-entry algorithm tag on the wire, no change to Nix's own verifier
+internals, and no dependency on `#15926` landing first. The open question is
+narrower: an explicit composition point between Nix's existing trust
+decision and the result of a locally invoked, pluggable authorizer.
+
+**Five-minute review path:**
+[`docs/MAINTAINER_REVIEW.md`](docs/MAINTAINER_REVIEW.md).
+
+**Verified evidence.** Claims about real Determinate Nix interoperability
+are pinned to commit
+[`a900a4f`](https://github.com/Luminous-Dynamics/nix-signature-policy/tree/a900a4f31ee270c390e99e19f202f45111c90a38)
+(annotated tag `raw-evidence-adapter-verified-2026-07-16`); see
+`tests/fixtures/determinate-nix-449/PROVENANCE.md` for the full build
+record.
 
 **Status:** research prototype. The policy engine and conformance suite are not
 a native Nix implementation, and the bundled cryptographic/proxy components are
 unaudited and must not be treated as production security infrastructure.
 
-Start here:
+## Documentation
 
-- [`docs/CORE_V1.md`](docs/CORE_V1.md) — frozen minimal interoperability profile;
-- [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md);
-- [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md);
+Current work — composable authorization core and raw-evidence adapter:
+
+- [`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md) — verifying
+  real narinfo `Sig:` entries without depending on `#15926`, validated
+  against a real Determinate Nix build;
+- [`docs/NIX_INTEGRATION_CONTRACT.md`](docs/NIX_INTEGRATION_CONTRACT.md) —
+  the proposed Nix-side composition boundary;
+- [`docs/MAINTAINER_REVIEW.md`](docs/MAINTAINER_REVIEW.md) — the guided,
+  five-minute review path, including the caller-safety evidence summary;
+- [`docs/PRIOR_ART_AND_DESIGN_DELTA.md`](docs/PRIOR_ART_AND_DESIGN_DELTA.md) —
+  the actual upstream discussion (#14451, #15926, the closed #202) and exactly
+  what this project adds on top of it;
 - [`docs/NIX_INTEGRATION_ARCHAEOLOGY.md`](docs/NIX_INTEGRATION_ARCHAEOLOGY.md) —
   what the real Nix source actually shows about where this would integrate;
 - [`docs/CALLER_SAFETY.md`](docs/CALLER_SAFETY.md) — the hardened external-helper
   invocation contract and its adversarial test coverage;
-- [`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md) — verifying
-  real narinfo `Sig:` entries on current Nix without depending on `#15926`,
-  validated against a real Determinate Nix build;
-- [`docs/PRIOR_ART_AND_DESIGN_DELTA.md`](docs/PRIOR_ART_AND_DESIGN_DELTA.md) —
-  the actual upstream discussion (#14451, #15926, the closed #202) and exactly
-  what this project adds on top of it;
-- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md);
-- [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md);
-- [`docs/UPSTREAM_MINIMAL_SLICE.md`](docs/UPSTREAM_MINIMAL_SLICE.md);
-- [`docs/SECURITY_REVIEW_CHECKLIST.md`](docs/SECURITY_REVIEW_CHECKLIST.md);
-- [`docs/MAINTAINER_REVIEW.md`](docs/MAINTAINER_REVIEW.md) — a guided review
-  path, including the caller-safety evidence summary;
+- [`docs/CORE_V1.md`](docs/CORE_V1.md) — frozen minimal interoperability profile;
+- [`docs/NORMATIVE_AUTHORIZATION_SPEC.md`](docs/NORMATIVE_AUTHORIZATION_SPEC.md),
+  [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md),
+  [`docs/CONFORMANCE_PROFILE.md`](docs/CONFORMANCE_PROFILE.md),
+  [`docs/UPSTREAM_MINIMAL_SLICE.md`](docs/UPSTREAM_MINIMAL_SLICE.md),
+  [`docs/SECURITY_REVIEW_CHECKLIST.md`](docs/SECURITY_REVIEW_CHECKLIST.md);
+- [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md)
+  — the current upstream-oriented draft.
+
+Background and superseded material:
+
 - [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) — how this project got
   here, phase by phase;
-- [`rfc/0001-composable-signature-authorization.md`](rfc/0001-composable-signature-authorization.md).
-
-## Trust model — read this first
-
-**The proxy upgrades the signature *format*. It does not upgrade the
-upstream *root of trust*.** Its flow is: receive upstream metadata signed
-with Ed25519 → verify that Ed25519 signature → mint a new hybrid signature
-(our own Ed25519 + ML-DSA) over the same content. If an attacker can forge
-Ed25519 signatures (the exact threat a cryptographically-relevant quantum
-computer poses), they can hand the proxy forged upstream metadata; the
-proxy will happily verify that forged classical signature and then mint a
-perfectly valid ML-DSA signature over it. **The proxy is only as
-trustworthy as the classical upstream it's translating from** — it is a
-wire-format and deployment-mechanics demonstration, not a way to make a
-classically-signed cache post-quantum secure. A real post-quantum root of
-trust requires the origin cache itself to sign
-with a PQC key. DeterminateSystems/nix-src#449 demonstrates native
-ML-DSA algorithm agility, while upstream Nix PR #15926 proposes the
-corresponding key-type abstraction. Those are direct prior art and solve a
-different prerequisite. The remaining question studied here is policy:
-ordinary any-valid signature admission does not by itself require a
-classical **and** PQ authorization group. Useful things this prototype
-demonstrates are one concrete AND-composed rule, a backward-compatible
-experimental adapter, deployment mechanics, and a migration bridge for
-caches whose origin is independently authenticated by another means.
-
-## Scope
-
-Nix's supply chain has two halves for quantum readiness: store-path hashing
-(truncated SHA-256, still fine under Grover's algorithm) and binary-cache
-trust (Ed25519 `.narinfo` signatures, broken outright by Shor's algorithm on
-a cryptographically-relevant quantum computer). This tool addresses the
-second half — but **it does not and cannot make `cache.nixos.org` itself
-PQC-signed**: upstream doesn't sign with ML-DSA and we don't hold their key.
-What it demonstrates is one mandatory hybrid rule and a local
-trust-translating proxy, using a format (`Sig-PQC:`) that is our own
-invention for this prototype, not a Nix or IETF specification. The bundled
-RFC is retained as a historical transport-format draft. The committed
-`policy-vectors/` suite and `src/policy*.rs` harness model policy independently
-from transport so the same cases can be evaluated through ordinary
-algorithm-tagged signatures, this prototype’s parallel field, or a future
-authoritative external verifier.
+- [Historical prototype and superseded wire-format exploration](#historical-prototype-and-superseded-wire-format-exploration)
+  — the original `nix-pqc-cache-proxy` binary and invented `Sig-PQC:` field,
+  further down this document.
 
 ## What's proven, and what isn't
 
@@ -226,7 +225,7 @@ assertion:**
 The proxy defaults to loopback and conservative operational limits:
 
 ```console
-cargo run --locked -- proxy \
+cargo run --locked --bin nix-pqc-cache-proxy -- proxy \
   --upstream https://cache.example \
   --upstream-pubkey cache.example-1:BASE64 \
   --key proxy-1.secret \
@@ -523,6 +522,56 @@ not certify production readiness, audit status, or reproducible binaries. See
 - Production key management, rotation, or multi-algorithm PQC support in
   the proxy itself (the wire format's tag byte anticipates it; the proxy
   doesn't implement it).
+
+## Historical prototype and superseded wire-format exploration
+
+This section documents the project's original phase: the `nix-pqc-cache-proxy`
+binary and an invented `Sig-PQC:` narinfo field. That phase is superseded by
+the composable-authorization-core work described at the top of this document
+— it's kept here for the proxy's own users and for historical/audit
+completeness. See [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) for
+the full evolution.
+
+### The proxy's trust model
+
+**The proxy upgrades the signature *format*. It does not upgrade the
+upstream *root of trust*.** Its flow is: receive upstream metadata signed
+with Ed25519 → verify that Ed25519 signature → mint a new hybrid signature
+(our own Ed25519 + ML-DSA) over the same content. If an attacker can forge
+Ed25519 signatures (the exact threat a cryptographically-relevant quantum
+computer poses), they can hand the proxy forged upstream metadata; the
+proxy will happily verify that forged classical signature and then mint a
+perfectly valid ML-DSA signature over it. **The proxy is only as
+trustworthy as the classical upstream it's translating from** — it is a
+wire-format and deployment-mechanics demonstration, not a way to make a
+classically-signed cache post-quantum secure. A real post-quantum root of
+trust requires the origin cache itself to sign
+with a PQC key. DeterminateSystems/nix-src#449 demonstrates native
+ML-DSA algorithm agility, while upstream Nix PR #15926 proposes the
+corresponding key-type abstraction. Those are direct prior art and solve a
+different prerequisite. The remaining question studied here is policy:
+ordinary any-valid signature admission does not by itself require a
+classical **and** PQ authorization group. Useful things this prototype
+demonstrates are one concrete AND-composed rule, a backward-compatible
+experimental adapter, deployment mechanics, and a migration bridge for
+caches whose origin is independently authenticated by another means.
+
+### Original scope
+
+Nix's supply chain has two halves for quantum readiness: store-path hashing
+(truncated SHA-256, still fine under Grover's algorithm) and binary-cache
+trust (Ed25519 `.narinfo` signatures, broken outright by Shor's algorithm on
+a cryptographically-relevant quantum computer). This tool addresses the
+second half — but **it does not and cannot make `cache.nixos.org` itself
+PQC-signed**: upstream doesn't sign with ML-DSA and we don't hold their key.
+What it demonstrates is one mandatory hybrid rule and a local
+trust-translating proxy, using a format (`Sig-PQC:`) that is our own
+invention for this prototype, not a Nix or IETF specification. The bundled
+RFC is retained as a historical transport-format draft. The committed
+`policy-vectors/` suite and `src/policy*.rs` harness model policy independently
+from transport so the same cases can be evaluated through ordinary
+algorithm-tagged signatures, this prototype’s parallel field, or a future
+authoritative external verifier.
 
 ## RFC and current upstream context
 
