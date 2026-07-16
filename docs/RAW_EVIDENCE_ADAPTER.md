@@ -72,7 +72,7 @@ configuration (`RawEvidenceError::DuplicateVerificationKeyName`), before
 any signature is even looked at.
 
 This isn't just a simplifying choice -- it mirrors a real, reproducible
-limitation of current Nix itself. Signing one store path with an Ed25519
+limitation of the tested Determinate Nix 3.20.0 build. Signing one store path with an Ed25519
 key and an ML-DSA-65 key that share the *identical* `--key-name` produces
 a narinfo with two valid `Sig:` entries under that one name, but `nix
 store verify --trusted-public-keys "<ed25519> <ml-dsa>" --sigs-needed 2`
@@ -87,8 +87,9 @@ reproduction in `tests/fixtures/determinate-nix-449/PROVENANCE.md`'s
 `same_name_collision_registry_is_rejected_as_duplicate_config` and
 `same_name_collision_with_only_ed25519_key_registered_ml_dsa_entry_fails_safe`.
 
-**Even current Nix's own newest multi-algorithm signing implementation
-cannot make one operator identity simultaneously trusted under both
+**Even the tested Determinate Nix 3.20.0 build -- Nix's own newest
+multi-algorithm signing implementation -- cannot make one operator
+identity simultaneously trusted under both
 algorithms through the built-in key-name mechanism alone.** The correct
 pattern -- confirmed working at `--sigs-needed 2` -- is distinct key names
 per algorithm (e.g. `acme-release-ed25519-1` / `acme-release-mldsa65-1`),

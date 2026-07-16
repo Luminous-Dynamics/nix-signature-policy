@@ -1,6 +1,9 @@
 # Nix signature-authorization integration contract
 
-Status: implemented
+Status: reference contract implemented and tested in this repository;
+Nix-side integration (an actual invocation hook at Nix's admission
+boundary) is not implemented -- see `docs/RAW_EVIDENCE_ADAPTER.md`'s
+"What this does and does not remove as a dependency".
 
 This contract isolates the smallest upstream-facing security boundary discovered
 by the prototype: whether a composed authorization policy is merely advisory or
