@@ -587,6 +587,12 @@ The crate (`src/`, `tests/`, `benches/`, `examples/`) is
 AGPL-3.0-or-later, per `Cargo.toml` and `LICENSE` — deliberate, since this
 is network-facing server software (the `proxy` subcommand) and
 modifications served over a network should stay open per the AGPL's intent.
+This has no bearing on Nix itself (LGPL-2.1-or-later): every design here
+assumes an out-of-process interface (an external command Nix invokes and
+reads a response from, per
+[NixOS/nix#14451](https://github.com/NixOS/nix/issues/14451)'s own proposed
+shape), so nothing in this repository would need to be copied, linked, or
+incorporated into Nix for the interface itself to be usable.
 
 `test-vectors/*.json` is CC0-1.0 (`test-vectors/LICENSE`) instead: those
 exist specifically so an independent implementation (`tvix`, Cachix,
