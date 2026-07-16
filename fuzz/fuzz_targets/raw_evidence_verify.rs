@@ -101,6 +101,13 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+fn b64_decode(s: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .expect("real SPKI fixture must be valid base64")
+}
+
 /// Derive a bounded, varied "noise" signature entry + matching (or
 /// deliberately mismatching) verification-key entry from a few fuzz
 /// bytes. Covers: malformed base64, wrong-length raw keys, corrupted SPKI
@@ -125,8 +132,14 @@ fn derive_noise(cursor: &mut Cursor, index: usize) -> (String, VerificationKeyEn
             // PROVENANCE.md's DER breakdown) -- usually produces a wrong
             // or malformed OID, exercising decode_ml_dsa_65_spki's
             // rejection path without hand-maintaining a second real SPKI
-            // fixture.
-            let mut corrupted = key_line_b64(REAL_ML_DSA_65_PUB_LINE).into_bytes();
+            // fixture. Decodes to real DER bytes first: mutating the
+            // base64 *text* instead (an earlier version of this harness
+            // did exactly that) doesn't correspond to any specific
+            // decoded-byte offset, since base64 is a 6-bits-per-character
+            // encoding -- one flipped character can smear across two
+            // adjacent decoded bytes at a boundary this offset math never
+            // accounted for.
+            let mut corrupted = b64_decode(&key_line_b64(REAL_ML_DSA_65_PUB_LINE));
             if !corrupted.is_empty() {
                 let offset = (4 + (cursor.byte() as usize % 13)) % corrupted.len();
                 let flip = cursor.byte().max(1);
@@ -134,10 +147,7 @@ fn derive_noise(cursor: &mut Cursor, index: usize) -> (String, VerificationKeyEn
                     *byte ^= flip;
                 }
             }
-            (
-                PublicKeyEncoding::SpkiDer,
-                String::from_utf8_lossy(&corrupted).to_string(),
-            )
+            (PublicKeyEncoding::SpkiDer, b64(&corrupted))
         }
         _ => (PublicKeyEncoding::SpkiDer, b64(cursor.slice(6))), // too short to be valid SPKI
     };
