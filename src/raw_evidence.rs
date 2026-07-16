@@ -67,13 +67,22 @@ use crate::hybrid::{
     ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, ML_DSA_65_PUBLIC_KEY_LEN,
     ML_DSA_65_SIGNATURE_LEN, verify_ed25519_only, verify_ml_dsa_only,
 };
-use crate::narinfo::parse_sig_entry;
+use crate::narinfo::{MAX_SIGNATURE_ENTRY_BYTES, parse_sig_entry};
 use crate::policy::{AlgorithmId, SignatureCandidate, VerificationOutcome};
 
 /// Maximum raw signature entries accepted before verification, mirroring
 /// `core-v1`'s existing bounds so this adapter cannot be used to smuggle in
 /// unbounded work ahead of the evaluator's own limits.
 pub const MAX_RAW_SIGNATURE_ENTRIES: usize = 128;
+
+/// Maximum base64 bytes accepted for one verification key's encoded
+/// public key, checked before base64 decoding. The largest real key this
+/// adapter recognizes (ML-DSA-65 SPKI-DER, ~2.6 KiB base64-encoded)
+/// leaves generous headroom under this bound; it exists so a direct
+/// caller of [`verify_raw_evidence`] (not routed through
+/// `raw_protocol.rs`'s overall request-byte cap) can't force an
+/// unbounded base64 decode.
+pub const MAX_PUBLIC_KEY_BASE64_BYTES: usize = 8 * 1024;
 
 /// Maximum verification-key registry entries accepted. Without this,
 /// [`verify_raw_evidence`] is `pub fn` and callable directly (not only
@@ -180,7 +189,25 @@ fn verify_one(
     raw_entry: &str,
     verification_keys: &[VerificationKeyEntry],
 ) -> SignatureCandidate {
-    let signature_id = signature_id(raw_entry);
+    // Bounded before any other work: a direct caller of
+    // verify_raw_evidence isn't routed through raw_protocol.rs's overall
+    // request-byte cap, so an oversized entry must never make this
+    // function hash or parse an unbounded string. Matches the same
+    // MAX_SIGNATURE_ENTRY_BYTES bound parse_sig_entry itself would apply
+    // below -- checked first so we never pay for the work parse_sig_entry
+    // would reject anyway. signature_id still gets a real, bounded prefix
+    // hash so its content-addressed-identity contract stays meaningful.
+    if raw_entry.len() > MAX_SIGNATURE_ENTRY_BYTES {
+        let prefix_len = MAX_SIGNATURE_ENTRY_BYTES.min(raw_entry.len());
+        return SignatureCandidate {
+            key_name: claimed_key_name(raw_entry),
+            algorithm: AlgorithmId::new(),
+            signature_id: signature_id(&raw_entry.as_bytes()[..prefix_len]),
+            verification: VerificationOutcome::Malformed,
+        };
+    }
+
+    let signature_id = signature_id(raw_entry.as_bytes());
 
     // A raw entry that doesn't even parse as "name:base64" has no key name
     // to resolve; keep a bounded, best-effort diagnostic label. This is
@@ -234,6 +261,14 @@ fn verify_against_key(
     message: &[u8],
     signature: &[u8],
 ) -> VerificationOutcome {
+    // Bounded before decoding, for the same direct-caller reason as
+    // verify_one's entry-length check above: base64_decode's own work is
+    // linear in input size, so an oversized key must be rejected before
+    // that decode runs, not after.
+    if key.public_key_base64.len() > MAX_PUBLIC_KEY_BASE64_BYTES {
+        return VerificationOutcome::Malformed;
+    }
+
     let Some(encoded_public_key) = base64_decode(&key.public_key_base64) else {
         return VerificationOutcome::Malformed;
     };
@@ -294,15 +329,28 @@ fn decode_ml_dsa_65_spki(der_bytes: &[u8]) -> Result<Vec<u8>, ()> {
 
 /// Stable, content-addressed identity for a signature's raw bytes: exact
 /// duplicates (byte-identical entry) share this ID, matching
-/// `SignatureCandidate::signature_id`'s documented contract.
-fn signature_id(raw_entry: &str) -> String {
-    format!("{:x}", Sha256::digest(raw_entry.as_bytes()))
+/// `SignatureCandidate::signature_id`'s documented contract. Takes raw
+/// bytes rather than `&str` so callers can safely hash a byte-index
+/// prefix of an oversized entry without needing UTF-8 char-boundary
+/// bookkeeping.
+fn signature_id(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Best-effort, bounded label for an entry that couldn't even be split
-/// into `(name, base64)` -- diagnostics only, see [`verify_one`].
+/// into `(name, base64)` -- diagnostics only, see [`verify_one`]. Bounds
+/// its own colon search to `MAX_CLAIMED_KEY_NAME_CHARS`-worth of the
+/// input first: `str::split`'s search scans to the end of the string
+/// when no `':'` is present, so without this an oversized, colon-free
+/// `raw_entry` would make this function do unbounded work regardless of
+/// what any caller has already checked.
 fn claimed_key_name(raw_entry: &str) -> String {
-    let name = raw_entry.split(':').next().unwrap_or(raw_entry);
+    let scan_window = raw_entry
+        .char_indices()
+        .nth(MAX_CLAIMED_KEY_NAME_CHARS)
+        .map(|(byte_idx, _)| &raw_entry[..byte_idx])
+        .unwrap_or(raw_entry);
+    let name = scan_window.split(':').next().unwrap_or(scan_window);
     name.chars().take(MAX_CLAIMED_KEY_NAME_CHARS).collect()
 }
 
@@ -580,6 +628,54 @@ mod tests {
             result.unwrap_err(),
             RawEvidenceError::TooManyVerificationKeys
         );
+    }
+
+    #[test]
+    fn oversized_raw_entry_is_rejected_without_hashing_or_parsing_the_full_string() {
+        // Exercises verify_raw_evidence directly (bypassing
+        // raw_protocol.rs's overall request-byte cap) with a single
+        // signature entry larger than MAX_SIGNATURE_ENTRY_BYTES. Must
+        // come back Malformed, not panic, and not hang -- the point of
+        // this test is that it completes quickly even though the entry
+        // is huge; a regression that removed the early length check
+        // would still pass this test's assertions but would take much
+        // longer to run (hashing/scanning the full oversized string).
+        let message = b"1;/nix/store/abc-foo;sha256:def;120;";
+        let oversized_entry = format!("cache:{}", "A".repeat(MAX_SIGNATURE_ENTRY_BYTES + 1));
+
+        let candidates = verify_raw_evidence(message, &[oversized_entry], &[]).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].verification, VerificationOutcome::Malformed);
+    }
+
+    #[test]
+    fn oversized_raw_entry_with_no_colon_is_rejected_without_unbounded_scanning() {
+        // Same as above, but with no ':' anywhere in the oversized entry
+        // -- claimed_key_name's own colon search must be bounded too, not
+        // just verify_one's length check, or this would scan the entire
+        // multi-megabyte string looking for a delimiter that isn't there.
+        let message = b"1;/nix/store/abc-foo;sha256:def;120;";
+        let oversized_entry = "B".repeat(MAX_SIGNATURE_ENTRY_BYTES * 4);
+
+        let candidates = verify_raw_evidence(message, &[oversized_entry], &[]).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].verification, VerificationOutcome::Malformed);
+        assert!(candidates[0].key_name.len() <= MAX_CLAIMED_KEY_NAME_CHARS);
+    }
+
+    #[test]
+    fn oversized_public_key_base64_is_rejected_without_decoding_the_full_string() {
+        let message = b"1;/nix/store/abc-foo;sha256:def;120;";
+        let oversized_key = key(
+            "cache",
+            "ed25519",
+            PublicKeyEncoding::Raw,
+            &vec![0u8; MAX_PUBLIC_KEY_BASE64_BYTES], // encodes to well over the base64 bound
+        );
+        let entries = [entry("cache", &b64(&[0u8; 64]))];
+
+        let candidates = verify_raw_evidence(message, &entries, &[oversized_key]).unwrap();
+        assert_eq!(candidates[0].verification, VerificationOutcome::Malformed);
     }
 
     #[test]
