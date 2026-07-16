@@ -153,6 +153,63 @@ signatures, and enough context to call this adapter at the real admission
 boundary (see `docs/NIX_INTEGRATION_ARCHAEOLOGY.md`). Those are two
 separate gaps; this document only closes the first.
 
+## Architecture: current implementation and proposed Nix admission boundary
+
+Solid borders below are implemented and tested in this repository.
+Dashed borders are the proposed Nix-side integration -- not built, not
+part of any Nix patch, described here only as the shape a future
+composition point could take.
+
+```mermaid
+flowchart TB
+    subgraph Implemented["Implemented and tested (this repository)"]
+        direction TB
+        R["Raw evidence: real narinfo Sig: entries<br/>(literal keyname:base64, no algorithm tag)"]
+        ADAPTER["Bounded local adapter<br/>(src/raw_evidence.rs)"]
+        O["Normalized observations O<br/>(VerificationOutcome computed here,<br/>never trusted from the wire)"]
+        POLICY["Policy evaluator<br/>(core-v1, unmodified)"]
+        P["Policy result P"]
+        R --> ADAPTER --> O --> POLICY --> P
+    end
+
+    subgraph Proposed["Proposed Nix-side integration (not built)"]
+        direction TB
+        B["Built-in result B<br/>(today's trusted-public-keys check, unchanged)"]
+        COMPOSE["Nix composition of B and P<br/>Legacy = B<br/>Supplemental = B OR P<br/>Conjunctive = B AND P<br/>Authoritative = P"]
+        DECISION["Admission decision<br/>+ narHash verification"]
+        B --> COMPOSE
+    end
+
+    P -.-> COMPOSE
+    COMPOSE --> DECISION
+
+    classDef proposed stroke-dasharray: 5 5,stroke:#888888,fill:none
+    class B,COMPOSE,DECISION proposed
+```
+
+*Mode names (`Legacy`/`Supplemental`/`Conjunctive`/`Authoritative`) are
+this crate's actual `EnforcementMode` enum (`src/integration.rs`) --
+implemented and tested here, but the enum has no upstream Nix
+counterpart. The helper never admits artifacts by itself; Nix would
+remain the sole enforcement point under any of these modes.*
+
+Real interoperability evidence backing the "Implemented" half above --
+see `tests/fixtures/determinate-nix-449/PROVENANCE.md` for the full
+build record:
+
+```mermaid
+flowchart LR
+    A["Pinned Determinate Nix build<br/>nix-src#449, commit 6b78b5d8<br/>(merged 2026-05-20)"] --> B["Real Ed25519 + ML-DSA-65<br/>signatures generated"]
+    B --> C["Ordinary repeated Sig: fields<br/>(no algorithm tag)"]
+    C --> D["ML-DSA-65 SPKI DER key<br/>OID 2.16.840.1.101.3.4.3.18"]
+    D --> E["Independent Rust verification<br/>ed25519-dalek + ml-dsa crate"]
+    E --> F["Tamper + wrong-fingerprint<br/>rejection tested"]
+```
+
+*Interoperability build and verification performed 2026-07-15, against
+a machine built directly from the pinned commit above -- not a
+synthetic fixture.*
+
 ## Precise claim this adapter supports
 
 Before this adapter existed, saying *"the reference implementation works
