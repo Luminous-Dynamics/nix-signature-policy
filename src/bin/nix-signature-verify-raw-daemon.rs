@@ -152,10 +152,13 @@ fn main() -> ExitCode {
         verification_keys.len()
     );
 
+    let connection_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let keys = Arc::clone(&verification_keys);
+                let n = connection_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                eprintln!("accepted connection #{n}");
                 std::thread::spawn(move || handle_connection(stream, &keys));
             }
             Err(e) => {
