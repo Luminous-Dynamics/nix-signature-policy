@@ -62,6 +62,23 @@ pre-existing, unrelated LLVM/`alloca`-crate issue documented on the
 prior tag. See `docs/evidence/` for the vendored Nix-fork patches and
 E2E scripts backing every model's cited commits.
 
+**Follow-up performance campaign.**
+[`docs/PERFORMANCE_PROTOCOL.md`](docs/PERFORMANCE_PROTOCOL.md) (frozen
+scope) →
+[`docs/PROCESS_VS_PROVIDER_RESULTS.md`](docs/PROCESS_VS_PROVIDER_RESULTS.md)
+(results + stop/go recommendation): at single-path granularity the
+process/provider *boundary* costs almost nothing (a real ~55ms gap
+traced to the specific verifier binary invoked, not the transport
+mechanism); at realistic multi-path-closure and concurrent-load
+granularity the difference is decisive — O-process forks a fresh
+subprocess per path (13x slower than baseline at a 100-path closure),
+O-provider does not (statistically indistinguishable from baseline,
+pulls ahead of it under concurrency). Recommendation: investigate a
+persistent-service successor (Model S) for O-process; do not build
+authorization caching for either model, per
+[`docs/CACHE_DECISION_QUESTIONS.md`](docs/CACHE_DECISION_QUESTIONS.md)'s
+preserved-but-unanswered question list.
+
 ## Documentation
 
 **[`docs/CANDIDATE_ARCHITECTURES.md`](docs/CANDIDATE_ARCHITECTURES.md)** —
