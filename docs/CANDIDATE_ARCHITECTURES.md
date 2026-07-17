@@ -14,7 +14,7 @@ This document exists because presenting a single working prototype as
 an in-process PKCS#11-shaped verifier, a closure/build-trace scope
 broader than one artifact, and per-nar-info (not per-signature)
 invocation granularity — and no single architecture answers all three
-without trade-offs. Five point-wise admission-boundary models and one
+without trade-offs. Six point-wise admission-boundary models and one
 closure/build-trace skeleton were built, independently verified, and
 measured against the same fork, the same frozen fixtures, and (where
 meaningful) the same benchmark policy.
@@ -96,10 +96,10 @@ in how N/P/T vs. H/O-process/O-provider actually relate to each other):
 **N, P, and T are three successive commits on one research branch**
 (`model-n-native-grouped-signatures`, at `8ad4bbe`, `8858bef`, and
 `f317153` respectively) — not three independent branches. **H,
-O-process, and O-provider are each an independent branch**, starting
-fresh from the shared foundation (`11a967a`) and, for O-process and
-O-provider, cherry-picking N's commit onto that fresh start rather than
-building on N's branch directly.
+O-process, O-provider, and S are each an independent branch**, starting
+fresh from the shared foundation (`11a967a`) and, for O-process,
+O-provider, and S, cherry-picking N's commit onto that fresh start
+rather than building on N's branch directly.
 
 This is legitimate, not a shortcut that compromises any result, and was
 checked rather than assumed: P's commit (`8858bef`) touches only
@@ -122,17 +122,32 @@ zero effect on either commit's actual diff content or test results.
 | **H** — spawned helper returns a final decision | point-wise · spawned · external-P (opaque) | `admission-boundary-experiment-v1` @ `8a01e8c` (independently verified, see below) | (author's own, independently reproduced) |
 | **O-process** — spawned helper returns typed observations, Nix owns policy | point-wise · spawned · native-narrow | `o-process-external-verifier` @ `187029b` | `o-process-verified-2026-07-17` |
 | **O-provider** — in-process `dlopen`'d C ABI returns typed observations, Nix owns policy | point-wise · in-process provider · native-narrow | `o-provider-inprocess-verifier` @ `840d22e` | `o-provider-verified-2026-07-17` |
+| **S** — persistent Unix-socket observation service, Nix owns policy | point-wise · persistent service · native-narrow | `model-s-persistent-service` @ `21cc893` | `model-s-verified-2026-07-17` |
 
-**Documented, not built: Model S — persistent sandboxed observation
-service.** A long-running local service (Unix socket) that amortizes
-process-startup cost across many admission decisions, still returning
-typed observations with Nix owning policy — the natural next step past
-O-process if per-decision fork/exec cost matters more than this
-comparison found it to. Not built because daemon lifecycle,
+**Model S was originally documented-but-not-built** in this
+comparison's first pass, deferred because "daemon lifecycle,
 authentication, and cache-invalidation semantics would each need their
-own real design and would have distorted this round's comparison scope.
-Listed here as a labeled reference, not a candidate with evidence behind
-it.
+own real design and would have distorted this round's comparison
+scope." It was subsequently built as a *deliberately scoped prototype*
+after `docs/PROCESS_VS_PROVIDER_RESULTS.md`'s performance campaign
+directly confirmed its trigger conditions (O-process's fork/exec cost
+dominates and does not amortize across a closure) rather than leaving
+them hypothetical. See `docs/PROCESS_VS_PROVIDER_RESULTS.md`'s "Model S
+prototype" section for the full performance result — summary: it is
+measurably faster than O-process (1.7x at a 100-path closure) but does
+**not** close the gap to O-provider/native, because the prototype's
+caller connects fresh per admission decision rather than reusing a
+connection across a closure operation. This is a real, identified,
+plausibly fixable limitation of the prototype as built, not of the
+persistent-service *approach* — documented as a specific next
+refinement, not chased further in this round (see that document for
+why). Explicitly still out of scope, matching the original write-up's
+own boundary and the doc comment in
+`nix-signature-verify-raw-daemon.rs` (in the `nix-signature-policy`
+repo): real authentication beyond socket-file permissions, supervision/
+lifecycle management, and any caching of verification results (a
+performance question, kept fully separate from the caching question
+`docs/CACHE_DECISION_QUESTIONS.md` preserves but does not answer).
 
 ### Reproducibility
 
@@ -216,19 +231,24 @@ cost every model pays identically.
 | **O-provider** total (vs shared foundation) | 13 | 642 | 1 | `840d22e` |
 | ...of which N reuse (cherry-picked) | 6 | 186 | 0 | `0bd28ca` |
 | ...O-provider's own marginal cost | 7 | 456 | 1 | `840d22e` vs `0bd28ca` |
+| **S** total (vs shared foundation) | 12 | 628 | 1 | `21cc893` |
+| ...of which N reuse (cherry-picked) | 6 | 186 | 0 | `fd4708e` |
+| ...S's own marginal cost | 6 | 442 | 1 | `21cc893` vs `fd4708e` |
 
 N, P, and T are each small and strictly additive (zero deletions),
 consistent with each being a narrow, single-purpose slice. H, O-process,
-and O-provider are the three models that modify existing control flow
+O-provider, and S are the four models that modify existing control flow
 (`pathInfoIsUntrusted`) rather than only adding new files/functions. Of
-those three, H's *total* (617) is the largest, but O-process's and
-O-provider's *marginal* cost over N (500 and 456 respectively — the
-fairer comparison, since both deliberately reuse N's policy primitive
-rather than re-deriving one) are both smaller than H's total, despite
-each also modifying `pathInfoIsUntrusted` and needing their own
-transport-specific module. O-provider's marginal cost is the smallest
-of the three despite being the only model with a novel in-process-ABI
-risk category to design.
+those four, H's *total* (617) is the largest, but O-process's,
+O-provider's, and S's *marginal* cost over N (500, 456, and 442
+respectively — the fairer comparison, since all three deliberately
+reuse N's policy primitive rather than re-deriving one) are all smaller
+than H's total, despite each also modifying `pathInfoIsUntrusted` and
+needing their own transport-specific module. S's marginal cost is the
+smallest of the four, slightly under O-provider's — a socket-based
+caller (connect, write, half-close, poll-bounded read, close) turned
+out simpler to write than either the fork/exec/pipe/thread machinery
+(H, O-process) or the `dlopen`/ABI-versioning machinery (O-provider).
 
 O-provider's diff also includes a genuinely different artifact type the
 others don't have: a plain-C ABI header
@@ -250,6 +270,7 @@ build.
 | H | 611/611 full suite (pre-N/P/T baseline count) | Committed test broken (see above); 5/6 scenarios independently reproduced E2E with the corrected invocation, all correct |
 | O-process | 617/617 full suite | Real E2E, 4/4 scenarios: full evidence admits; incomplete evidence refuses; legacy mode never launches the provider (sentinel-confirmed); crashing provider fails closed |
 | O-provider | 617/617 `libstore-tests` + 707/707 `libutil-tests` | Real E2E, 7/7 scenarios: legacy never `dlopen`s the provider; conjunctive admits on a satisfied group; conjunctive refuses on an unsatisfiable group; an ABI-version mismatch is a hard load-time error; a missing provider library fails closed; an algorithm the provider can't evaluate is a hard error, never silently "invalid"; **a crashing provider segfaults `nix-store`'s own process (exit 139/SIGSEGV) — demonstrated, not asserted** |
+| S | 617/617 `libstore-tests` + 707/707 `libutil-tests` | Real E2E, 6/6 scenarios: legacy never connects; conjunctive admits on a satisfied group; **a second decision against the same already-running daemon process also admits correctly (persistence itself exercised, not just correctness)**; conjunctive refuses on an unsatisfiable group; a missing/not-running service fails closed; **a service that accepts a connection but never responds correctly times out (~1080-1100ms against a configured 1000ms deadline) and fails closed, rather than hanging Nix indefinitely** |
 
 O-provider's `dlopen`/`dlsym` wiring has no dedicated unit tests
 (mirroring O-process's own gap for its process-invocation code at this
@@ -270,6 +291,18 @@ independent timeout to fall back on. This is a real difference in
 failure modes (bounded-but-external vs. unbounded-but-contained-in-one-
 process), not a gap in this comparison's test coverage.
 
+**S reintroduces a real, independently-verified timeout**, unlike
+O-provider — a service that accepts a connection but never sends a
+response is bounded by `signature-observation-service-timeout-ms`, the
+same shape as H's and O-process's subprocess timeouts, and was tested
+the same way (a real hung listener, not a mocked one): the caller
+correctly gives up and fails closed rather than blocking Nix
+indefinitely. This is expected given S's transport is still a
+process-external boundary (a socket connection to a separate process),
+just a persistent one rather than a freshly spawned one — it inherits
+H's/O-process's bounded-failure-mode property, not O-provider's
+unbounded one.
+
 ### Runtime trusted computing base and compromise blast radius
 
 | Model | What runs, where | A compromised/buggy verifier can... | A compromised/buggy policy evaluator can... |
@@ -279,6 +312,7 @@ process), not a gap in this comparison's test coverage.
 | H | A spawned subprocess, bounded (timeout, bounded output), that receives raw signature entries and returns one opaque `accept`/`refuse` decision — verification and policy are not separated | Claim any policy decision for any reason; in conjunctive mode this can only ever *narrow* admission (Nix's own check must also pass), never widen it. Cannot be distinguished from a bad policy call — H has no typed-observation boundary at all | Same box as "verifier" — H does not split these two failure modes |
 | O-process | A spawned subprocess, bounded, that only verifies cryptography and returns typed per-signature observations; Nix's own compiled policy evaluates them | Falsely claim a specific (key, signature) pair verified or didn't — bounded to the observations it's asked about; cannot invent new policy semantics, since Nix's fixed vocabulary evaluates the result | n/a — Nix's own code is the policy evaluator, same class as N |
 | O-provider | A `dlopen`'d shared library running *inside Nix's own process*, sharing its address space and fault domain; same observation/policy split as O-process | Same *logical* scope as O-process (bounded to per-signature claims) but a categorically worse *consequence*: no process boundary at all, so a bug can corrupt Nix's own memory or crash the process outright — **demonstrated** via the crash-provider E2E scenario (exit 139), not merely a theoretical concern | n/a — same as O-process |
+| S | A separate, long-running service process, connected to fresh per admission decision over a Unix-domain socket; same observation/policy split as O-process and O-provider. Adds a TCB dimension none of the point-wise process-per-decision models have: the service process's *own trustworthiness persists across every decision it ever serves* — a subverted or degraded service (not merely a single bad decision) affects every subsequent admission until the process is restarted, unlike O-process where each decision gets a fresh process | Same *logical* scope as O-process (bounded to per-signature claims, process-isolated so a crash is contained the same way O-process's is) — but a persistent process is a *standing* target in a way a process that lives for one decision and exits is not; compromise, once achieved, has a longer window | n/a — same as O-process |
 
 **P and O-process share a security property H does not have**: because
 both split "did this verify" from "does policy accept it," a
@@ -302,6 +336,16 @@ verifier" and "process crash/memory corruption of Nix itself" are the
 same failure mode.** This is its defining, deliberate trade-off — traded
 against removing fork/exec/pipe overhead entirely — not an oversight.
 
+**S is the only model where the verifier's trustworthiness is a
+property of *time*, not just of a single decision.** Every other
+process-based model (H, O-process) starts a fresh, freshly-trusted-or-
+not process per decision; a compromise of one decision's helper says
+nothing about the next decision's freshly-spawned helper. S's service
+persists, so a single successful compromise (of the service process
+itself, its host, or its supply chain) potentially taints every
+decision made until it is restarted — a real, distinct risk shape this
+comparison had not needed to name until S existed to have it.
+
 ### Evidence-format and policy-language agility
 
 | Model | Can a new *evidence type* (e.g. a crypto scheme Nix doesn't natively verify) be added without patching Nix? | Can the *policy vocabulary* (e.g. thresholds, quorums, distinct-identity rules) be extended without patching Nix? |
@@ -311,6 +355,7 @@ against removing fork/exec/pipe overhead entirely — not an oversight.
 | H | Yes — the helper can evaluate any evidence it wants; Nix never inspects it | Yes — same helper, same freedom, but conflated with evidence handling (see TCB table) |
 | O-process | Yes — the provider can implement any crypto scheme and just report typed valid/invalid | No — Nix's fixed `KeyGroup` vocabulary, same limit as N |
 | O-provider | Yes — same as O-process | No — same fixed vocabulary as N/O-process |
+| S | Yes — same as O-process/O-provider (in this prototype, the *same* `verify_raw_evidence` code O-process's real verifier uses, so it already supports both Ed25519 and ML-DSA-65 without O-provider's Ed25519-only scoping) | No — same fixed vocabulary as N/O-process/O-provider |
 
 No model in this comparison provides *both* kinds of agility without
 also conflating verification and policy into one opaque decision (H's
@@ -329,6 +374,7 @@ model gets.
 | H | Hook path/mode/timeout (3) | Same | Additive; legacy mode preserves exact prior behavior |
 | O-process | Provider path/mode/timeout + repeatable key-group (4) | Same | Additive |
 | O-provider | Provider *library* path/mode + repeatable key-group (3) | Provider `.so` is `dlopen`'d once and cached for the **process's lifetime, never reloaded** — swapping the file on disk does not take effect without restarting the Nix process, unlike every subprocess-based model, which execs fresh on every invocation | Additive |
+| S | Service socket path/mode/timeout + repeatable key-groups (4) | Same reconfiguration story as O-process/H — the *client* (Nix) picks up a config change on its next invocation, no restart needed on Nix's side. But the *service itself* has no hot-reload for its registry (verification keys are loaded once at daemon startup) — changing trusted keys means restarting the daemon, a real operational cost O-process/H don't have (their "process" is re-created from current config on every single decision, so their equivalent of "config" is always fresh) | Additive |
 
 O-process needed one more setting than H (4 vs. 3) because Nix's own
 native policy needs the group structure explicit — H's helper makes
@@ -391,6 +437,26 @@ conditions, is an explicit open item, not silently dropped.
 original 1/2/8/32/128 sweep) for any model — all timing above is at
 exactly 2 signatures, the frozen benchmark policy's own evidence set.
 No claim is made about how any model scales with signature count.
+
+**This section's single-path numbers turned out to be the wrong level
+of granularity to answer the real performance question.** A dedicated
+follow-up campaign — `docs/PERFORMANCE_PROTOCOL.md` (frozen scope) →
+`docs/PROCESS_VS_PROVIDER_RESULTS.md` (results + stop/go
+recommendation) — found that at single-path granularity every model is
+fast and the boundary mechanism itself costs almost nothing (the ~55ms
+gap above traces to the *specific verifier binary invoked*, not the
+IPC transport, once measured properly). The real signal is at
+closure-throughput and concurrency granularity: **O-process's
+per-decision fork/exec cost does not amortize across a multi-path
+closure — 13x slower than baseline at 100 paths** — while O-provider
+does not have this problem. **Model S (persistent Unix-socket service,
+built after that campaign confirmed O-process's fork/exec cost as the
+dominant factor) is measurably better than O-process (1.7x faster at
+100 paths) but does not close the gap to O-provider**, because its
+current prototype connects fresh per decision rather than reusing a
+connection across a closure operation. Full numbers, methodology, and
+the resulting stop/go recommendation live in
+`docs/PROCESS_VS_PROVIDER_RESULTS.md`, not duplicated here.
 
 ### Closure/build-trace extensibility (does this survive a move toward whole-closure scope?)
 
