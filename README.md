@@ -53,6 +53,15 @@ unaudited and must not be treated as production security infrastructure.
 
 ## Documentation
 
+**[`docs/CANDIDATE_ARCHITECTURES.md`](docs/CANDIDATE_ARCHITECTURES.md)** —
+an empirical comparison of five point-wise Nix authorization-boundary
+architectures plus a closure/build-trace skeleton, each built against a
+real patched Nix fork and independently verified (real diffs, real
+tests, real E2E scenarios — including a demonstrated in-process-provider
+crash). Grounded directly in #14451's own thread objections rather than
+a single proposed design. Factual results only; no ranking or
+recommendation.
+
 Current work — composable authorization core and raw-evidence adapter:
 
 - [`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md) — verifying
