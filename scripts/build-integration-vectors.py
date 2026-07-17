@@ -43,6 +43,11 @@ def build():
     cases.append(vector('unsupported-contract-fails-closed','An unsupported contract version fails closed.',r,'accept','accept','refuse',{'unsupported_contract_version','built_in_accepted','policy_accepted','registry_accepted','registry_required','authoritative_policy_required'}))
     r=with_pq(BASE); r['evaluation_context']['minimum_registry_epoch']=2
     cases.append(vector('registry-rollback-fails-closed','Registry rollback refuses independently of both authorization paths.',r,'accept','refuse','refuse',{'built_in_accepted','policy_accepted','registry_refused','registry_required','authoritative_policy_required'}))
+    r=copy.deepcopy(BASE); r['enforcement_mode']='legacy'; r['evaluation_context']['minimum_registry_epoch']=2
+    cases.append(vector('legacy-ignores-registry-rollback','A rolled-back registry does not veto legacy mode, which uses only the built-in decision.',r,'refuse','refuse','accept',{'built_in_accepted','policy_refused','registry_refused','registry_required'}))
+    r=copy.deepcopy(BASE); r['enforcement_mode']='supplemental'; r['built_in_decision']='refuse'; r['evaluation_context']['minimum_registry_epoch']=2
+    r=with_pq(r)
+    cases.append(vector('supplemental-registry-rollback-blocks-policy-path','A rolled-back registry still blocks the policy path in supplemental mode when built-in trust refuses.',r,'accept','refuse','refuse',{'built_in_refused','policy_accepted','registry_refused','registry_required'}))
     r=with_pq(BASE); r['evaluation_context']['minimum_policy_epoch']=2
     cases.append(vector('policy-rollback-fails-authoritative','Policy rollback refuses under authoritative enforcement.',r,'refuse','accept','refuse',{'built_in_accepted','policy_refused','registry_accepted','registry_required','authoritative_policy_required'}))
     r=with_pq(BASE)

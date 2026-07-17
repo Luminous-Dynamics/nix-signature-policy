@@ -1,0 +1,138 @@
+{
+  "case_id": "legacy-ignores-registry-rollback",
+  "description": "A rolled-back registry does not veto legacy mode, which uses only the built-in decision.",
+  "expected": {
+    "admission_decision": "accept",
+    "policy_decision": "refuse",
+    "registry_decision": "refuse",
+    "required_reason_codes": [
+      "built_in_accepted",
+      "policy_refused",
+      "registry_refused",
+      "registry_required"
+    ]
+  },
+  "request": {
+    "built_in_decision": "accept",
+    "candidates": [
+      {
+        "algorithm": "ed25519",
+        "key_name": "cache",
+        "signature_id": "ed-good",
+        "verification": "valid"
+      }
+    ],
+    "contract_version": 2,
+    "enforcement_mode": "legacy",
+    "evaluation_context": {
+      "evaluation_time": 100,
+      "minimum_policy_epoch": 0,
+      "minimum_registry_epoch": 2
+    },
+    "policy": {
+      "accept_if_any": [
+        {
+          "clause_id": "required",
+          "relations": [
+            {
+              "attribute": "identity",
+              "groups": [
+                "classical",
+                "post-quantum"
+              ],
+              "mode": "same",
+              "relation_id": "same-signer-identity"
+            }
+          ],
+          "required_groups": [
+            {
+              "group": "classical",
+              "min_distinct_identities": 1
+            },
+            {
+              "group": "post-quantum",
+              "min_distinct_identities": 1
+            }
+          ]
+        }
+      ],
+      "active_from": null,
+      "algorithm_registry": [
+        {
+          "algorithm": "ed25519",
+          "assurance_class": "classical",
+          "family": "elliptic_curve"
+        },
+        {
+          "algorithm": "ml-dsa-65",
+          "assurance_class": "post_quantum",
+          "family": "lattice"
+        }
+      ],
+      "epoch": 1,
+      "expires_at": null,
+      "family_registry": [
+        {
+          "family": "elliptic_curve",
+          "status": "enabled"
+        },
+        {
+          "family": "lattice",
+          "status": "enabled"
+        }
+      ],
+      "group_definitions": [
+        {
+          "group": "classical",
+          "predicate": {
+            "allowed_assurance_classes": [
+              "classical"
+            ]
+          }
+        },
+        {
+          "group": "post-quantum",
+          "predicate": {
+            "allowed_assurance_classes": [
+              "post_quantum"
+            ]
+          }
+        }
+      ],
+      "max_signature_candidates": 32,
+      "max_signature_observations": 128,
+      "policy_id": "hybrid-required",
+      "previous_policy_hash": null,
+      "version": 1
+    },
+    "trust_registry": {
+      "epoch": 1,
+      "registry_id": "example-cache-keys",
+      "trusted_keys": [
+        {
+          "algorithm": "ed25519",
+          "authority": "cache-owner",
+          "custody_domain": "cache-ed",
+          "key_id": "cache-ed",
+          "key_name": "cache",
+          "roles": [
+            "cache-signing"
+          ],
+          "signer_identity": "cache-owner"
+        },
+        {
+          "algorithm": "ml-dsa-65",
+          "authority": "cache-owner",
+          "custody_domain": "cache-pq",
+          "key_id": "cache-pq",
+          "key_name": "cache",
+          "roles": [
+            "cache-signing"
+          ],
+          "signer_identity": "cache-owner"
+        }
+      ]
+    }
+  },
+  "schema_version": 1
+}

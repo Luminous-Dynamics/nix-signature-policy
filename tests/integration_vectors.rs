@@ -39,7 +39,7 @@ fn integration_mode_matrix_is_stable() {
         })
         .collect::<Vec<_>>();
     paths.sort();
-    assert_eq!(paths.len(), 10);
+    assert_eq!(paths.len(), 12);
 
     for path in paths {
         run_vector(&path);

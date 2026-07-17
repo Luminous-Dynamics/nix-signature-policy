@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 paths=sorted((root/'integration/vectors').glob('*.json'))
-assert len(paths)==10
+assert len(paths)==12
 ids=set()
 for path in paths:
  d=json.loads(path.read_text()); assert d['schema_version']==1
@@ -14,8 +14,13 @@ for path in paths:
  builtin=r['built_in_decision']=='accept'
  policy=e['policy_decision']=='accept'
  mode=r['enforcement_mode']
- mode_accept={'legacy':builtin,'supplemental':builtin or policy,'authoritative':policy,'conjunctive':builtin and policy}[mode]
- expected='accept' if contract and registry and mode_accept else 'refuse'
+ # `registry` (trust-registry validity) only gates the policy path, never
+ # the built-in path -- a rolled-back or invalid registry must not be
+ # able to veto Nix's own built-in trust result. `contract` is a genuine
+ # cross-cutting gate in every mode.
+ registry_gated_policy=registry and policy
+ mode_accept={'legacy':builtin,'supplemental':builtin or registry_gated_policy,'authoritative':registry_gated_policy,'conjunctive':builtin and registry_gated_policy}[mode]
+ expected='accept' if contract and mode_accept else 'refuse'
  assert expected==e['admission_decision'], d['case_id']
  required=set(e['required_reason_codes'])
  assert ('registry_accepted' in required)==registry

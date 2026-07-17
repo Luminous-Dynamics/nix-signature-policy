@@ -160,10 +160,26 @@ pub fn authorize(request: &AuthorizationRequest) -> AuthorizationResponse {
     });
     reason_codes.insert(AdmissionReasonCode::RegistryRequired);
 
+    // `registry_accepts` (trust-registry epoch/rollback validity) only
+    // gates the *policy* path, never the built-in path -- a registry
+    // rollback or invalidation must not be able to veto Nix's own
+    // built-in trust result. Legacy mode in particular is documented
+    // ("Preserve existing Nix behavior; policy is evaluated only for
+    // evidence") to be exactly Nix's built-in decision and nothing else;
+    // a prior version of this function unconditionally ANDed
+    // `registry_accepts` into every mode's final decision, so an invalid
+    // or rolled-back registry could refuse admission even in Legacy mode
+    // despite Legacy never consulting the registry for its own decision.
+    // `contract_supported` remains a genuine cross-cutting gate in every
+    // mode -- an unsupported wire-contract version means this function
+    // cannot trust its own interpretation of the rest of the request,
+    // which is a protocol-safety concern independent of enforcement mode.
+    let registry_gated_policy_accepts = registry_accepts && policy_accepts;
+
     let mode_accepts = match request.enforcement_mode {
         EnforcementMode::Legacy => built_in_accepts,
         EnforcementMode::Supplemental => {
-            let accepted = built_in_accepts || policy_accepts;
+            let accepted = built_in_accepts || registry_gated_policy_accepts;
             if accepted {
                 reason_codes.insert(AdmissionReasonCode::SupplementalPathAccepted);
             }
@@ -171,10 +187,10 @@ pub fn authorize(request: &AuthorizationRequest) -> AuthorizationResponse {
         }
         EnforcementMode::Authoritative => {
             reason_codes.insert(AdmissionReasonCode::AuthoritativePolicyRequired);
-            policy_accepts
+            registry_gated_policy_accepts
         }
         EnforcementMode::Conjunctive => {
-            let accepted = built_in_accepts && policy_accepts;
+            let accepted = built_in_accepts && registry_gated_policy_accepts;
             if !accepted {
                 reason_codes.insert(AdmissionReasonCode::ConjunctiveRequirementFailed);
             }
@@ -182,7 +198,7 @@ pub fn authorize(request: &AuthorizationRequest) -> AuthorizationResponse {
         }
     };
 
-    let accepts = contract_supported && registry_accepts && mode_accepts;
+    let accepts = contract_supported && mode_accepts;
 
     AuthorizationResponse {
         contract_version: INTEGRATION_CONTRACT_VERSION,
@@ -418,6 +434,52 @@ mod tests {
             response
                 .reason_codes
                 .contains(&AdmissionReasonCode::RegistryRefused)
+        );
+    }
+
+    /// Regression for the bug an external review found: a prior version
+    /// of `authorize()` ANDed `registry_accepts` into every mode's final
+    /// decision, so a rolled-back or invalid trust registry could refuse
+    /// admission even in Legacy mode -- despite Legacy mode's own doc
+    /// comment stating it preserves existing Nix behavior and evaluates
+    /// policy "only for evidence." A misconfigured or stale external
+    /// registry must never be able to veto Nix's own built-in trust
+    /// result when the built-in path is the only one Legacy mode
+    /// actually uses.
+    #[test]
+    fn legacy_mode_ignores_registry_rollback() {
+        let mut request = request(EnforcementMode::Legacy, BuiltInDecision::Accept, true);
+        request.evaluation_context.minimum_registry_epoch = 2;
+        let response = authorize(&request);
+        assert_eq!(response.decision, AdmissionDecision::Accept);
+        // The rollback is still visible for observability -- it just
+        // doesn't gate Legacy mode's decision.
+        assert_eq!(
+            response.registry_decision.decision,
+            RegistryDecisionValue::Refuse
+        );
+        assert!(
+            response
+                .reason_codes
+                .contains(&AdmissionReasonCode::RegistryRefused)
+        );
+    }
+
+    /// The other half of the same fix: in Supplemental mode, when the
+    /// built-in path itself refuses, a rolled-back registry must still
+    /// prevent the policy path from independently authorizing --
+    /// `registry_accepts` guards the policy path, it just must not guard
+    /// the built-in path (covered above).
+    #[test]
+    fn supplemental_mode_policy_path_is_still_registry_gated() {
+        let mut request = request(EnforcementMode::Supplemental, BuiltInDecision::Refuse, true);
+        request.evaluation_context.minimum_registry_epoch = 2;
+        let response = authorize(&request);
+        assert_eq!(response.decision, AdmissionDecision::Refuse);
+        assert_eq!(response.policy_decision.decision, Decision::Accept);
+        assert_eq!(
+            response.registry_decision.decision,
+            RegistryDecisionValue::Refuse
         );
     }
 }
