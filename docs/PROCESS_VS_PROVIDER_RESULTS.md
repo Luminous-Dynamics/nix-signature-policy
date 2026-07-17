@@ -1,17 +1,26 @@
 # Process vs. provider: performance results and stop/go recommendation
 
 **Status: results for the layers actually run, explicit stop/go
-recommendation at the end. Updated after Model S was subsequently
-built and measured** (see "Model S prototype," below) — this document
-originally recommended investigating a persistent-service successor to
-O-process; that investigation is now done, with a real, qualified
-(not clean-yes) result. Written against `docs/PERFORMANCE_PROTOCOL.md`'s
-frozen scope. Three of the protocol's matrix dimensions were not run
-this round (signature-count sweep, cold/warm state isolation,
-failure-path timing) — flagged explicitly in "Not run this round," not
-silently dropped. What *was* run answers the protocol's central
-question with enough evidence to make the stop/go call the campaign
-exists to inform.
+recommendation at the end. Twice updated after Model S was
+subsequently built, measured, refined, and re-measured** (see "Model S
+prototype," below) — this document originally recommended investigating
+a persistent-service successor to O-process; that investigation is
+done, and its first favorable result (Model S 1.7x faster than
+O-process) did **not** replicate once the identified next refinement
+(connection reuse) was actually built and re-measured under the same
+interleaved discipline as everything else in this campaign. The final
+reading is that neither Model S nor O-process resolves the
+closure-throughput problem — only O-provider does, in this campaign's
+data. This reversal is itself evidence for the value of this
+document's own interleaving/replication discipline: a single favorable
+measurement, even a clean-looking one, was not trustworthy until
+re-tested. Written against `docs/PERFORMANCE_PROTOCOL.md`'s frozen
+scope. Three of the protocol's matrix dimensions were not run this
+round (signature-count sweep, cold/warm state isolation, failure-path
+timing) — flagged explicitly in "Not run this round," not silently
+dropped. What *was* run answers the protocol's central question with
+enough evidence to make the stop/go call the campaign exists to
+inform.
 
 All data: `measurement/performance/raw/*.jsonl`, one file per batch,
 each with its own load-average record. Environment:
@@ -71,61 +80,100 @@ uses, differing only in transport: a registry loaded once at daemon
 startup, served over a long-lived socket, instead of a fresh process
 per decision.
 
-Re-ran Layer 4 with Model S added, N=15 interleaved rounds, lower load
-this time (load1 5.66–9.77, cleaner than the batch above) — daemon
-started once, kept running for the entire batch:
+**Batch A (before connection reuse)** — N=15 interleaved rounds, load1
+5.66–9.77, daemon started once and kept running for the batch, but the
+Nix-side caller connected to the socket fresh on every single admission
+decision (no connection reuse yet):
 
 | Config | n=1 | n=10 | n=100 | ms/path at n=100 |
 |---|---:|---:|---:|---:|
 | baseline | 77ms | 80ms | 133ms | 1.33ms |
 | O-process | 116ms | 339ms | 2,893ms | 28.93ms |
-| **Model S** | 101ms | 240ms | **1,687ms** | 16.87ms |
+| Model S (connect-per-decision) | 101ms | 240ms | 1,687ms | 16.87ms |
 | O-provider | 74ms | 78ms | 147ms | 1.47ms |
 
-**The hypothesis is partially confirmed, and the honest result is more
-interesting than a clean yes/no.** Model S *is* measurably faster than
-O-process at scale — 1.7x at 100 paths (16.87ms vs 28.93ms marginal
-cost per path) — confirming that avoiding a fresh process per decision
-helps, as predicted. But Model S does **not** close the gap to
-O-provider/baseline: it is still ~13x slower than baseline at 100
-paths (almost exactly O-process's original ratio in the batch above),
-while O-provider remains ~1.1x (statistically indistinguishable from
-baseline).
+At the time, this read as "Model S is 1.7x faster than O-process,
+confirming that avoiding a fresh process per decision helps." A
+connection-reuse fix was then implemented (see the paired
+`nix-signature-policy` commits: NDJSON framing on the daemon so one
+connection can serve many sequential requests, plus a
+`Sync<map<socketPath, fd>>` cache on the Nix side mirroring O-provider's
+`dlopen`-handle cache) and **directly confirmed to work as intended** —
+the daemon's own connection-accept log shows exactly one connection
+accepted per `nix-store` invocation regardless of how many paths it
+processes (a 10-path closure produces exactly one "accepted connection"
+line, not ten).
 
-**Why the amortization is only partial**: this prototype's
-Nix-side caller (`signature-service-caller.cc`) connects to the
-service fresh on every single admission decision — `pathInfoIsUntrusted`
-is called once per path in a closure, and the current implementation
-does `connect()` → write → read → close every time, with no connection
-reuse across the multiple calls one `nix-store -r` invocation makes.
-Only the *service process itself* persists; the *connection* does not.
-A `connect()`/close() cycle on a Unix domain socket is far cheaper than
-`fork()`+`execve()` (no page-table copy, no dynamic linking, no new
-process for the scheduler to manage) — which is exactly why Model S
-beats O-process — but it is not free, and at 100 repetitions within one
-closure operation that per-decision connection cost adds up to a real,
-measured gap.
+**Batch B (after connection reuse, verified working)** — N=8
+interleaved rounds, load1 6.96–9.25, same daemon, same fixtures:
 
-**This is a specific, identified, plausibly fixable limitation of the
-prototype as built, not a limitation of the persistent-service
-approach in general.** The natural next refinement — not built in this
-round, per this campaign's own scope discipline (report the prototype's
-real, measured behavior; defer the next iteration explicitly rather
-than open-endedly chasing incremental gains) — would be connection
-pooling or reuse across a single `nix-store` invocation's multiple
-`pathInfoIsUntrusted` calls, mirroring how O-provider caches its
-`dlopen`'d handle for the process's lifetime rather than reloading it
-per decision. Whether that closes the remaining gap to O-provider is an
-open, testable, and well-motivated question for a follow-up, not
-assumed here in either direction.
+| Config | n=1 | n=10 | n=100 | ms/path at n=100 |
+|---|---:|---:|---:|---:|
+| baseline | 84ms | 85ms | 164ms | 1.64ms |
+| O-process | 123ms | 369ms | 3,320ms | 33.20ms |
+| **Model S (connection reused)** | 112ms | 385ms | **3,325ms** | 33.25ms |
+| O-provider | 85ms | 86ms | 183ms | 1.83ms |
 
-Concurrency (Layer 5) for Model S was attempted but not completed —
-the measurement harness was killed twice under this session's
-concurrent-session load when a 4th config was added to the existing
-3-config sweep, and was not reattempted given Layer 4 already answers
-the amortization-hypothesis question this prototype exists to test.
-Noted as not-yet-measured, not silently dropped; a real, open item for
-anyone continuing this campaign.
+**Connection reuse, despite being mechanically verified correct,
+produced no measurable improvement over O-process** — 33.25ms vs.
+33.20ms marginal cost per path, statistically indistinguishable, both
+distributions overlapping substantially at n=100 (O-process: 2,856–
+3,864ms across 8 rounds; Model S: 2,595–3,739ms). This directly
+contradicts Batch A's "1.7x faster" reading. Batch B is the more
+trustworthy number: both configs were measured in the same interleaved
+batch against their own contemporaneous baseline, whereas Batch A's
+"1.7x" was only ever compared across two different measurement
+sessions (see this document's own earlier caution, in the Layers 1-3
+section, about exactly this kind of cross-batch comparison). **Batch
+A's result should be treated as likely noise or an unidentified
+load-related artifact, not a reproducible effect** — a real example of
+why this campaign's own interleaving discipline exists, and why a
+single favorable measurement should not be trusted until it either
+replicates or is understood mechanistically.
+
+**Diagnostic follow-up, to understand what actually dominates the
+per-decision cost now that connection setup is ruled out**: a pure
+Python client — no Nix, no closure machinery, just connect once and
+send 100 sequential newline-delimited requests over the reused
+connection — was used to isolate the raw protocol round-trip cost.
+Sending the *same* two-signature (Ed25519 + ML-DSA-65) request the
+original frozen benchmark fixture uses: median 42.4ms per round-trip.
+Restricted to *only* the Ed25519 signature (matching what Model S's
+real caller actually sends for the closure fixtures, which were signed
+with Ed25519 only): median 14.0ms. **The raw protocol round-trip itself
+— write one line, wait, read one line, over an already-open, reused
+connection, doing real signature verification — has an ~14ms floor on
+this machine**, even with zero connection-setup cost. That floor is
+close enough to O-process's fork/exec/pipe/verify total cost that
+removing fork/exec alone doesn't produce a visible win once the
+connection is already warm — whatever dominates is something the two
+models now share (candidates, not confirmed: cryptographic verification
+cost, or synchronous cross-process scheduling/context-switch cost under
+this machine's load — genuinely not isolated further here, flagged as
+open rather than guessed at).
+
+**Revised understanding**: the original hypothesis — "O-process is slow
+because it forks a process per decision" — was too narrow. Fork/exec is
+*a* cost, and Batch A's H-vs-O-process-trivial-script comparison
+earlier in this document still correctly shows the transport mechanism
+itself (spawned process vs. persistent connection) costs about the same
+when the payload is trivial. But once the payload requires *real
+verification work*, that work's own cost — not the transport — appears
+to set the floor, and neither O-process nor a connection-reused Model S
+escapes it. **Only O-provider, which eliminates the cross-process
+round-trip entirely (a direct function call, no serialization, no
+socket, no scheduler involvement), escapes this floor** — which is
+exactly why O-provider alone lands within noise of native baseline at
+every closure size measured in this campaign.
+
+Concurrency (Layer 5) for Model S — both before and after the
+connection-reuse fix — was attempted but not completed; the measurement
+harness was killed repeatedly under this session's concurrent-session
+load when a 4th config was added to the existing 3-config sweep. Given
+Layer 4 now shows connection reuse produces no measurable win, a
+concurrency measurement is lower-priority than it would have been under
+Batch A's (likely spurious) result, but remains a real open item, not
+silently dropped, for anyone continuing this campaign.
 
 ## Layer 5: concurrency (1/4/16 concurrent jobs)
 
@@ -191,52 +239,67 @@ Applying `docs/PERFORMANCE_PROTOCOL.md`'s frozen criteria to the
 evidence above:
 
 **"Investigate Model S (persistent service) before any caching work"
-— done, and the result is a qualified success, not a clean yes.** The
-prototype confirms the underlying hypothesis (avoiding a fresh process
-per decision measurably helps — 1.7x faster than O-process at a
-100-path closure) without fully delivering the hoped-for outcome
-(parity with O-provider — it doesn't reach that, still ~13x slower
-than baseline at 100 paths). The gap is traced to a specific,
-named, plausibly fixable cause: the prototype's caller reconnects per
-decision rather than reusing a connection across a closure operation —
-see "Model S prototype," above. **The honest updated recommendation**:
-Model S as built is a real, working, but *incomplete* answer to
-O-process's scaling problem. It is good evidence that the persistent-
-service *direction* is sound and worth continuing to invest in over
-either accepting O-process's scaling problem or moving to O-provider's
-TCB trade-off — but "build Model S" is not by itself a finished
-solution; "build Model S with connection reuse" is the next, still-
-unbuilt, well-motivated candidate.
+— done, in full, including the specific refinement (connection reuse)
+this document originally identified as the next step. The result is
+not the success the first measurement suggested.** Connection reuse was
+implemented, directly verified to work mechanically (one connection per
+`nix-store` invocation, confirmed via the daemon's own connection-accept
+log, not inferred from timing), and re-measured under the same
+interleaved discipline as every other result in this campaign. **It
+produced no measurable improvement over O-process** — 33.25ms vs.
+33.20ms marginal cost per path at 100 paths, distributions
+substantially overlapping. The earlier "1.7x faster" reading (Batch A,
+before the fix existed to compare against) did not replicate and should
+be treated as likely noise, not a real effect — see "Model S
+prototype," above, including the diagnostic that traced the
+~14ms-per-decision floor to something other than connection setup
+(most likely the verification round-trip's own cost, not isolated
+further). **The honest, final recommendation**: the persistent-service
+*direction*, at least as prototyped here, is not a fix for O-process's
+scaling problem. Removing fork/exec alone — whether via a persistent
+process (Model S) or nothing else — does not reach O-provider's
+performance, because fork/exec was never the sole or even dominant
+cost; a synchronous cross-process round-trip doing real verification
+work carries a cost of its own that a warm, reused connection does not
+eliminate. Only eliminating the *round-trip itself* (O-provider's
+in-process call) does.
 
-**"Defer caching entirely" — supported for O-provider.** Its
-performance is statistically indistinguishable from native baseline at
-every closure size and pulls ahead of baseline under concurrency.
-There is no performance problem for a caching layer to solve here.
-Combined with `docs/CANDIDATE_ARCHITECTURES.md`'s TCB finding (a
-compromised O-provider crashes Nix's own process — demonstrated, not
-theoretical), adding a caching layer to O-provider would add new
-security-sensitive surface to a model that does not have a performance
-problem motivating it.
+**"Defer caching entirely" — still supported, now for both O-process
+and Model S, not only O-provider.** O-provider's performance is
+statistically indistinguishable from native baseline at every closure
+size and pulls ahead of baseline under concurrency — no performance
+problem for a cache to solve. O-process and Model S now both show the
+same floor, for reasons this campaign traced to verification-round-trip
+cost, not a caching-shaped problem (a cache would need to store a
+*security decision*, exactly what `docs/CACHE_DECISION_QUESTIONS.md`
+declines to design without a demonstrated performance case — and the
+case demonstrated here points at a different fix, batching or
+eliminating the round-trip, not caching its result).
 
 **"Begin cache-correctness research" — not triggered by this
-campaign.** Neither model shows a bottleneck that only caching (as
-opposed to batching, which O-process structurally lacks, or a
-persistent service) could fix. The performance case for taking on a
+campaign, now more clearly than before.** Neither model shows a
+bottleneck caching (as opposed to batching, or eliminating the
+round-trip entirely) would fix. The performance case for taking on a
 new security-sensitive state machine (see
 `docs/CACHE_DECISION_QUESTIONS.md`) is not made by this evidence.
 
-**Overall**: the process/provider choice is not primarily a raw-speed
-question at single-path granularity (both are fast; the real single-
-path cost driver is the verifier's own cryptographic/parsing work, not
-the transport). It is a *scaling and concurrency* question, and there
-the evidence points one direction: **O-process needs either batching
-(invoke the helper once per closure, not once per path — a design
-change, not a caching layer) or a more complete persistent-service
-successor (Model S, with connection reuse added) before it's viable
-for realistic multi-path substitution workloads; O-provider does not
-have this problem, at the cost of the TCB trade-off
-`docs/CANDIDATE_ARCHITECTURES.md` already documented, and Model S as
-currently built sits in between (better than O-process, not yet as
-good as O-provider, with its own distinct standing-target TCB
-property).** None of these three conclusions depend on building a
-cache.
+**Overall, corrected**: the process/provider choice is not primarily a
+raw-speed question at single-path granularity (both are fast). At
+closure-throughput granularity, the real cost driver turned out to be
+neither "forking a process" nor "opening a connection" specifically,
+but the cost of a synchronous cross-process verification round-trip
+itself — which O-process pays via fork/exec, and which Model S, even
+with a correctly-implemented and verified warm connection, still pays
+via the round-trip's own floor. **O-provider is the only model
+measured in this campaign that avoids this cost, by avoiding the
+round-trip entirely** — at the TCB cost `docs/CANDIDATE_ARCHITECTURES.md`
+already documents (a compromised provider crashes Nix's own process,
+demonstrated not theoretical). For O-process to become viable at
+realistic multi-path closure sizes, the fix that remains genuinely
+promising is **batching** — one helper invocation per closure, carrying
+every path's evidence together, rather than one invocation (or one
+request) per path — a design change neither Model S nor this
+performance campaign attempted or measured. That is the most
+evidence-backed next step this campaign now points at, not a
+persistent-service successor. None of these conclusions depend on
+building a cache.

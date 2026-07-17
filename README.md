@@ -74,14 +74,19 @@ granularity the difference is decisive — O-process forks a fresh
 subprocess per path (13x slower than baseline at a 100-path closure),
 O-provider does not (statistically indistinguishable from baseline,
 pulls ahead of it under concurrency). Model S, a persistent Unix-socket
-service prototype built and measured in response, is a real but
-*partial* improvement (1.7x faster than O-process at 100 paths) that
-does not close the gap to O-provider — traced to the prototype
-reconnecting per decision rather than reusing a connection across a
-closure, a specific, named, not-yet-built next refinement. Do not
-build authorization caching for any model, per
+service prototype built in response, first measured 1.7x faster than
+O-process — but that result **did not replicate**: the identified
+follow-up fix (connection reuse across a closure) was built, directly
+verified to work mechanically, and re-measured, landing statistically
+identical to O-process. The floor turned out to be the synchronous
+verification round-trip itself, not process-spawn or connection-setup
+cost specifically — only O-provider, which eliminates the round-trip
+entirely, escapes it. Do not build authorization caching for any
+model, per
 [`docs/CACHE_DECISION_QUESTIONS.md`](docs/CACHE_DECISION_QUESTIONS.md)'s
-preserved-but-unanswered question list.
+preserved-but-unanswered question list; the most evidence-backed next
+step for O-process is batching (one helper invocation per closure), not
+a persistent-service successor.
 
 ## Documentation
 

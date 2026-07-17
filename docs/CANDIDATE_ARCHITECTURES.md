@@ -132,17 +132,34 @@ scope." It was subsequently built as a *deliberately scoped prototype*
 after `docs/PROCESS_VS_PROVIDER_RESULTS.md`'s performance campaign
 directly confirmed its trigger conditions (O-process's fork/exec cost
 dominates and does not amortize across a closure) rather than leaving
-them hypothetical. See `docs/PROCESS_VS_PROVIDER_RESULTS.md`'s "Model S
-prototype" section for the full performance result — summary: it is
-measurably faster than O-process (1.7x at a 100-path closure) but does
-**not** close the gap to O-provider/native, because the prototype's
-caller connects fresh per admission decision rather than reusing a
-connection across a closure operation. This is a real, identified,
-plausibly fixable limitation of the prototype as built, not of the
-persistent-service *approach* — documented as a specific next
-refinement, not chased further in this round (see that document for
-why). Explicitly still out of scope, matching the original write-up's
-own boundary and the doc comment in
+them hypothetical.
+
+**First measurement suggested a real win (1.7x faster than O-process at
+100 paths); that result did not replicate.** The identified next
+refinement (connection reuse across a closure, instead of connecting
+fresh per admission decision) was built, directly verified to work
+mechanically (the daemon's own connection-accept log confirms exactly
+one connection per `nix-store` invocation regardless of path count),
+and re-measured under the same interleaved discipline as every other
+result in this comparison. The re-measurement landed **statistically
+identical to O-process** (33.25ms vs. 33.20ms marginal cost per path),
+not the improvement the first measurement predicted. A follow-up
+diagnostic (a pure protocol client bypassing Nix entirely) traced the
+~14ms-per-decision floor to something other than connection setup —
+most plausibly the cost of the verification round-trip itself, shared
+by both O-process and a connection-reused Model S, which only
+O-provider's in-process call avoids. Full numbers, the batch-to-batch
+reversal, and the diagnostic that explains it are in
+`docs/PROCESS_VS_PROVIDER_RESULTS.md`'s "Model S prototype" section —
+kept there rather than duplicated here, per this document's own
+discipline of pointing at the performance campaign rather than
+re-stating it. This reversal is itself a real finding about
+measurement discipline: a single favorable result, even one with a
+plausible mechanism attached, needed replication before being trusted,
+and did not survive it.
+
+Explicitly still out of scope for this prototype, matching the original
+write-up's own boundary and the doc comment in
 `nix-signature-verify-raw-daemon.rs` (in the `nix-signature-policy`
 repo): real authentication beyond socket-file permissions, supervision/
 lifecycle management, and any caching of verification results (a
@@ -451,11 +468,15 @@ per-decision fork/exec cost does not amortize across a multi-path
 closure — 13x slower than baseline at 100 paths** — while O-provider
 does not have this problem. **Model S (persistent Unix-socket service,
 built after that campaign confirmed O-process's fork/exec cost as the
-dominant factor) is measurably better than O-process (1.7x faster at
-100 paths) but does not close the gap to O-provider**, because its
-current prototype connects fresh per decision rather than reusing a
-connection across a closure operation. Full numbers, methodology, and
-the resulting stop/go recommendation live in
+dominant factor) was measured twice — once before and once after
+implementing connection reuse — and the two results disagree**: the
+first measurement showed 1.7x improvement over O-process; after
+connection reuse was built and directly verified to work mechanically,
+the re-measurement landed statistically identical to O-process, not
+improved. A follow-up diagnostic traces this to a per-decision
+verification-round-trip cost that connection reuse does not eliminate,
+which only O-provider's in-process call avoids. Full numbers, the
+batch-to-batch reversal, and the diagnostic live in
 `docs/PROCESS_VS_PROVIDER_RESULTS.md`, not duplicated here.
 
 ### Closure/build-trace extensibility (does this survive a move toward whole-closure scope?)
