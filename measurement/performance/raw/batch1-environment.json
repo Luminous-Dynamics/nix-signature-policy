@@ -1,0 +1,23 @@
+{
+  "batch": "layer3-batch1 + layer2-batch1",
+  "date": "2026-07-17",
+  "cpu_model": "Intel(R) Core(TM) i9-8950HK CPU @ 2.90GHz, 6C/12T, max 4.8GHz min 800MHz",
+  "governor": "performance",
+  "turbo_enabled": true,
+  "total_memory_gb": 31,
+  "kernel": "7.1.3",
+  "compiler": "gcc 15.2.0 (host toolchain), gcc 14.3.0 (nix-src build toolchain)",
+  "meson_buildtype": "debugoptimized (verified for all three nix-src build trees before this batch: H, O-process, O-provider)",
+  "load1_range_during_layer3_batch1": [22.03, 25.45],
+  "load1_range_during_layer2_batch1": "see raw/layer2-batch1.jsonl per-trial load1_before field",
+  "shared_machine_caveat": "Not a dedicated benchmark rig; other Claude Code sessions may have been active concurrently. Interleaving (see docs/PERFORMANCE_PROTOCOL.md) is the mitigation, not a substitute for exclusive access.",
+  "nix_fork_commits": {
+    "baseline_and_oprovider": "840d22e (o-provider-inprocess-verifier)",
+    "h": "8a01e8c (admission-boundary-experiment-v1)",
+    "oprocess": "187029b (o-process-external-verifier, built fresh in /tmp/nix-src-oprocess after correcting an initial wrong meson buildtype default -- see notes below)"
+  },
+  "notes": [
+    "O-process's build tree was freshly created via `git worktree add` and its first `meson setup build` (no explicit buildtype flag) defaulted to 'debug' (unoptimized, confirmed via the _FORTIFY_SOURCE-requires-O compiler warning and meson introspection), which would have been a real confound against H's and O-provider's existing 'debugoptimized' builds. Caught before any trial ran; reconfigured with `meson configure -Dbuildtype=debugoptimized` and rebuilt from scratch.",
+    "An earlier single ad-hoc test (not part of this batch, N=20 each) suggested cleared-environment invocation might add ~12-18ms to the standalone verifier's cost. layer2-batch1's interleaved N=25 trials do NOT reproduce this (trivial_clearedenv median 22ms vs trivial_normalenv 27ms; real_clearedenv median 110ms vs real_normalenv 109ms -- statistically indistinguishable, if anything cleared-env trended slightly faster). The earlier ad-hoc result was noise, not signal -- reported here as a negative result, not silently dropped."
+  ]
+}
