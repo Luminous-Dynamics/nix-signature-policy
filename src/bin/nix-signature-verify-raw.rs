@@ -28,6 +28,17 @@ const MAX_REQUEST_BYTES: usize = 1_048_576;
 struct VerifyRawRequest {
     fingerprint: String,
     signatures: Vec<RawSignatureEntry>,
+    /// Optional when `--registry` supplies the verification-key registry
+    /// instead. Requests may still carry it directly (e.g. so a caller
+    /// that already has the registry in memory doesn't need a temp
+    /// file), but a real deployment naming this binary as the
+    /// `signature-observation-provider` for a persistent trust source
+    /// should prefer `--registry`: the caller sends only raw evidence
+    /// (fingerprint + signatures), matching the R -> O boundary this
+    /// binary exists to demonstrate, and this process needs no second
+    /// language/runtime (e.g. a JSON-merging wrapper script) between it
+    /// and the caller.
+    #[serde(default)]
     verification_keys: Vec<VerificationKeyEntry>,
 }
 
@@ -49,6 +60,16 @@ struct Args {
     /// Read the request from this file instead of standard input.
     #[arg(long)]
     request: Option<PathBuf>,
+    /// Load the verification-key registry from this file (a JSON array
+    /// of the same VerificationKeyEntry shape the request body's
+    /// `verification_keys` field uses) instead of requiring the caller
+    /// to send it on every request. Intended for exactly the deployment
+    /// this binary's doc comment describes: naming this binary directly
+    /// as a `signature-observation-provider`, with a persistent,
+    /// locally configured trust source, no wrapper process needed.
+    /// Overrides any `verification_keys` present in the request body.
+    #[arg(long)]
+    registry: Option<PathBuf>,
     /// Emit indented JSON rather than compact JSON.
     #[arg(long)]
     pretty: bool,
@@ -62,10 +83,23 @@ fn main() -> ExitCode {
         Err(message) => return fail(&message, args.pretty),
     };
 
-    let request: VerifyRawRequest = match serde_json::from_slice(&bytes) {
+    let mut request: VerifyRawRequest = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
         Err(_) => return fail("invalid request JSON", args.pretty),
     };
+
+    if let Some(registry_path) = args.registry.as_deref() {
+        let registry_bytes = match read_bounded(Some(registry_path)) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                return fail(&format!("cannot read --registry: {message}"), args.pretty);
+            }
+        };
+        request.verification_keys = match serde_json::from_slice(&registry_bytes) {
+            Ok(keys) => keys,
+            Err(_) => return fail("invalid --registry JSON", args.pretty),
+        };
+    }
 
     let candidates = match verify_raw_evidence(
         request.fingerprint.as_bytes(),
