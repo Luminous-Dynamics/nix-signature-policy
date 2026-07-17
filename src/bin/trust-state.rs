@@ -1,13 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use nix_signature_policy::atomic_file::{CommitMode, write_via_temp};
 use nix_signature_policy::integration::AuthorizationRequest;
 use nix_signature_policy::state::{
     advance_trust_state, apply_trust_state, initialize_trust_state, parse_trust_state,
     trust_state_to_pretty_json, verify_trust_state,
 };
+
+/// Trust-state files aren't secret, but they are integrity-critical
+/// rollback-resistance checkpoints -- an explicit mode is set rather
+/// than inheriting whatever the process umask happens to produce.
+const TRUST_STATE_FILE_MODE: u32 = 0o644;
 
 #[derive(Parser, Debug)]
 #[command(about = "Manage local rollback-resistant Nix trust checkpoints")]
@@ -66,7 +72,10 @@ fn main() -> Result<()> {
         } => {
             let request = read_request(&request)?;
             let state = initialize_trust_state(&domain, &request)?;
-            write_atomic(&out, trust_state_to_pretty_json(&state)?.as_bytes())?;
+            // A checkpoint is a new rollback-chain root -- never allowed
+            // to silently replace whatever (if anything) is already at
+            // `out`. See the module-level note on write_checkpoint().
+            write_checkpoint(&out, trust_state_to_pretty_json(&state)?.as_bytes())?;
         }
         Command::Advance {
             domain,
@@ -77,7 +86,12 @@ fn main() -> Result<()> {
             let state = read_state(&state)?;
             let request = read_request(&request)?;
             let advanced = advance_trust_state(&state, &domain, &request)?;
-            write_atomic(&out, trust_state_to_pretty_json(&advanced)?.as_bytes())?;
+            // Same reasoning as Init: two concurrent `advance` invocations
+            // both starting from the same checkpoint must not be able to
+            // race to the same `out` path and have the last rename win,
+            // silently discarding one advance. Committing via CreateNew
+            // makes the second writer fail loudly instead.
+            write_checkpoint(&out, trust_state_to_pretty_json(&advanced)?.as_bytes())?;
         }
         Command::Apply {
             domain,
@@ -90,7 +104,16 @@ fn main() -> Result<()> {
             apply_trust_state(&state, &domain, &mut request)?;
             let mut text = serde_json::to_string_pretty(&request)?;
             text.push('\n');
-            write_atomic(&out, text.as_bytes())?;
+            // Unlike a checkpoint, a guarded request is a disposable,
+            // per-invocation output that doesn't feed the rollback
+            // chain -- intentional overwrite (e.g. re-running the same
+            // apply) is fine here.
+            write_via_temp(
+                &out,
+                text.as_bytes(),
+                TRUST_STATE_FILE_MODE,
+                CommitMode::Replace,
+            )?;
         }
         Command::Verify { state } => {
             let state = read_state(&state)?;
@@ -115,18 +138,18 @@ fn read_state(path: &Path) -> Result<nix_signature_policy::state::TrustStateFile
     parse_trust_state(&bytes).with_context(|| format!("parsing trust state {path:?}"))
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).with_context(|| format!("creating {parent:?}"))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("output path has no UTF-8 file name"))?;
-    let temporary = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
-    if temporary == path {
-        bail!("temporary output path collides with destination");
-    }
-    fs::write(&temporary, bytes).with_context(|| format!("writing {temporary:?}"))?;
-    fs::rename(&temporary, path).with_context(|| format!("renaming {temporary:?} to {path:?}"))?;
-    Ok(())
+/// Commit a new rollback-chain checkpoint (`init`/`advance`'s `--out`).
+/// Uses `CommitMode::CreateNew`: the commit fails, atomically, if `out`
+/// already exists, rather than silently replacing it. This is the fix
+/// for a review-found race -- a prior version of this file's local
+/// `write_atomic()` always used rename-style replacement, so two
+/// concurrent `advance` invocations reading the same starting state
+/// could both compute a next checkpoint and both write it to the same
+/// `out` path, with the last rename silently winning and the other
+/// advance's result vanishing with no error. A checkpoint file is not a
+/// disposable scratch output like `apply`'s guarded request -- it feeds
+/// future `advance`/`apply` calls, so losing one silently is exactly the
+/// rollback-resistance property this tool exists to protect.
+fn write_checkpoint(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_via_temp(path, bytes, TRUST_STATE_FILE_MODE, CommitMode::CreateNew)
 }

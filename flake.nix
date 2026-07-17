@@ -181,6 +181,9 @@
             python3 scripts/check-resource-profile.py
             python3 scripts/check-integration-vectors.py
             python3 scripts/check-package-identity.py
+            cargo build --locked --bin trust-state >/dev/null
+            trust_state_bin="$(cargo metadata --no-deps --format-version=1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/debug/trust-state"
+            bash scripts/check-trust-state-checkpoint-no-clobber.sh "$trust_state_bin"
             cargo run --locked --bin policy-conformance -- --vectors policy-vectors --format json >/dev/null
             tmpdir="$(mktemp -d)"
             trap 'rm -rf "$tmpdir"' EXIT
@@ -257,6 +260,16 @@
           meta.description = "Create and verify hybrid attestations over release statements";
         };
 
+
+        apps.trust-state-checkpoint-no-clobber = mkLocalApp {
+          name = "nix-pqc-trust-state-checkpoint-no-clobber";
+          description = "Prove init/advance refuse to clobber an existing trust-state checkpoint";
+          runtimeInputs = [ package pkgs.coreutils ];
+          text = ''
+            set -euo pipefail
+            exec scripts/check-trust-state-checkpoint-no-clobber.sh "${package}/bin/trust-state"
+          '';
+        };
 
         apps.fuzz-smoke = mkLocalApp {
           name = "nix-pqc-fuzz-smoke";

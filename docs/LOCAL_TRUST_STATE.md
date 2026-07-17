@@ -50,7 +50,15 @@ trust-state apply --domain cache.example --state state.json \
 ```
 
 `verify` checks the state format and digest. `show` emits canonical pretty JSON.
-Writes use a same-directory temporary file followed by rename.
+Every write goes through a same-directory, randomly-named temporary file that
+is `fsync`ed before commit, with the containing directory itself `fsync`ed
+afterward. `init` and `advance` commit their checkpoint via an atomic
+create-only step (fails if `--out` already exists) rather than a plain
+rename, so two concurrent `advance` invocations that both start from the same
+checkpoint cannot race to the same `--out` path and have the second one
+silently discard the first's result -- the loser gets a clear error instead.
+`apply`'s guarded-request output is not part of the rollback chain and may be
+intentionally overwritten.
 
 ## Commitment migration
 

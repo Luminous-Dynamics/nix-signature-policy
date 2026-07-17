@@ -19,7 +19,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
-use rand::RngCore;
 
 use crate::hybrid::{
     self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSigner, HybridVerifyingKeys,
@@ -199,95 +198,25 @@ pub fn validate_key_name(name: &str) -> Result<()> {
 /// commit fails if `path` already exists, eliminating the previous
 /// check-then-rename race between concurrent key generators.
 fn write_new_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
-    write_via_temp(path, contents, secret, CommitMode::CreateNew)
+    let file_mode = if secret { 0o600 } else { 0o644 };
+    crate::atomic_file::write_via_temp(
+        path,
+        contents.as_bytes(),
+        file_mode,
+        crate::atomic_file::CommitMode::CreateNew,
+    )
 }
 
 /// Overwrite `path` atomically (temporary file + rename). Unlike
 /// `write_new_atomic`, replacement is intentional here, for example when
 /// re-signing an existing `.narinfo`.
 pub fn write_atomic_overwrite(path: &Path, contents: &str) -> Result<()> {
-    write_via_temp(path, contents, false, CommitMode::Replace)
-}
-
-#[derive(Clone, Copy)]
-enum CommitMode {
-    CreateNew,
-    Replace,
-}
-
-fn write_via_temp(path: &Path, contents: &str, secret: bool, mode: CommitMode) -> Result<()> {
-    let dir = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut rng = rand::rngs::OsRng;
-    let tmp_name = format!(
-        ".{}.tmp-{}-{:016x}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("file"),
-        std::process::id(),
-        rng.next_u64()
-    );
-    let tmp_path = dir.join(tmp_name);
-
-    let result = (|| -> Result<()> {
-        use std::io::Write;
-
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(if secret { 0o600 } else { 0o644 });
-        }
-        let mut file = options
-            .open(&tmp_path)
-            .with_context(|| format!("creating {tmp_path:?}"))?;
-        file.write_all(contents.as_bytes())
-            .with_context(|| format!("writing {tmp_path:?}"))?;
-        file.sync_all()
-            .with_context(|| format!("syncing {tmp_path:?}"))?;
-        drop(file);
-
-        match mode {
-            CommitMode::CreateNew => {
-                fs::hard_link(&tmp_path, path).with_context(|| {
-                    format!(
-                        "committing new file {path:?} without replacement (it may already exist)"
-                    )
-                })?;
-                // The destination is committed once hard_link succeeds. A
-                // failure to remove the temporary name must not report the
-                // whole key creation as failed after the durable destination
-                // already exists; leave cleanup as best effort.
-                let _ = fs::remove_file(&tmp_path);
-            }
-            CommitMode::Replace => {
-                fs::rename(&tmp_path, path)
-                    .with_context(|| format!("renaming {tmp_path:?} -> {path:?}"))?;
-            }
-        }
-
-        sync_parent_directory(dir)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-    result
-}
-
-fn sync_parent_directory(dir: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        fs::File::open(dir)
-            .with_context(|| format!("opening parent directory {dir:?} for sync"))?
-            .sync_all()
-            .with_context(|| format!("syncing parent directory {dir:?}"))?;
-    }
-    Ok(())
+    crate::atomic_file::write_via_temp(
+        path,
+        contents.as_bytes(),
+        0o644,
+        crate::atomic_file::CommitMode::Replace,
+    )
 }
 
 /// Which PQC construction a `Sig-PQC:` entry uses. A single variant today,
