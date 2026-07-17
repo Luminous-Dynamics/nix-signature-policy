@@ -51,6 +51,17 @@ record.
 a native Nix implementation, and the bundled cryptographic/proxy components are
 unaudited and must not be treated as production security infrastructure.
 
+**Verified evidence (architecture comparison).** Claims in
+`docs/CANDIDATE_ARCHITECTURES.md` are pinned to commit
+[`66e8eb4`](https://github.com/Luminous-Dynamics/nix-signature-policy/tree/66e8eb4a79e161a95899953862872564c4a5264b)
+(annotated tag `candidate-architectures-verified-2026-07-17`; does not
+move or replace `raw-evidence-adapter-verified-2026-07-16` above, which
+remains the pin for that earlier, narrower evidence). CI-gated: 8/9
+lanes pass, the 9th (macOS flake check) fails with the same
+pre-existing, unrelated LLVM/`alloca`-crate issue documented on the
+prior tag. See `docs/evidence/` for the vendored Nix-fork patches and
+E2E scripts backing every model's cited commits.
+
 ## Documentation
 
 **[`docs/CANDIDATE_ARCHITECTURES.md`](docs/CANDIDATE_ARCHITECTURES.md)** —
