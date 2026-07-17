@@ -473,11 +473,20 @@ implementing connection reuse — and the two results disagree**: the
 first measurement showed 1.7x improvement over O-process; after
 connection reuse was built and directly verified to work mechanically,
 the re-measurement landed statistically identical to O-process, not
-improved. A follow-up diagnostic traces this to a per-decision
-verification-round-trip cost that connection reuse does not eliminate,
-which only O-provider's in-process call avoids. Full numbers, the
-batch-to-batch reversal, and the diagnostic live in
-`docs/PROCESS_VS_PROVIDER_RESULTS.md`, not duplicated here.
+improved. A follow-up diagnostic traced this to a per-decision
+verification-round-trip cost that connection reuse does not eliminate.
+**A second follow-up hypothesis — that batching many decisions into one
+round trip, rather than reusing a connection across many round trips,
+would amortize that floor — was tested directly against the daemon and
+also refuted**: batched and individual per-decision costs were
+statistically indistinguishable for both a one-signature and a
+two-signature payload. The floor traces to the verification work
+itself (real signature checking), not to how many round trips or
+connections it's split across. Only O-provider's in-process call, which
+carries out that same verification work without any round-trip at all,
+avoids it. Full numbers, the batch-to-batch reversal, and both
+diagnostics live in `docs/PROCESS_VS_PROVIDER_RESULTS.md`, not
+duplicated here.
 
 ### Closure/build-trace extensibility (does this survive a move toward whole-closure scope?)
 

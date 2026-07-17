@@ -1,26 +1,31 @@
 # Process vs. provider: performance results and stop/go recommendation
 
 **Status: results for the layers actually run, explicit stop/go
-recommendation at the end. Twice updated after Model S was
-subsequently built, measured, refined, and re-measured** (see "Model S
-prototype," below) — this document originally recommended investigating
-a persistent-service successor to O-process; that investigation is
-done, and its first favorable result (Model S 1.7x faster than
-O-process) did **not** replicate once the identified next refinement
-(connection reuse) was actually built and re-measured under the same
-interleaved discipline as everything else in this campaign. The final
-reading is that neither Model S nor O-process resolves the
-closure-throughput problem — only O-provider does, in this campaign's
-data. This reversal is itself evidence for the value of this
-document's own interleaving/replication discipline: a single favorable
-measurement, even a clean-looking one, was not trustworthy until
-re-tested. Written against `docs/PERFORMANCE_PROTOCOL.md`'s frozen
-scope. Three of the protocol's matrix dimensions were not run this
-round (signature-count sweep, cold/warm state isolation, failure-path
-timing) — flagged explicitly in "Not run this round," not silently
-dropped. What *was* run answers the protocol's central question with
-enough evidence to make the stop/go call the campaign exists to
-inform.
+recommendation at the end. Three times updated as Model S was built,
+measured, refined, re-measured, and then the batching hypothesis it
+raised was tested directly** (see "Model S prototype" and "Batching
+diagnostic," below) — this document originally recommended
+investigating a persistent-service successor to O-process; that
+investigation is done, and its first favorable result (Model S 1.7x
+faster than O-process) did **not** replicate once the identified next
+refinement (connection reuse) was actually built and re-measured under
+the same interleaved discipline as everything else in this campaign. A
+follow-on hypothesis — that batching many decisions into one round
+trip would amortize the remaining floor — was then tested directly and
+also **refuted**. The final reading is that neither Model S nor
+O-process resolves the closure-throughput problem, no transport-level
+refinement of either one does either, and only O-provider does, in
+this campaign's data. This two-step reversal is itself evidence for
+the value of this document's own interleaving/replication discipline:
+a single favorable measurement, even a clean-looking one, was not
+trustworthy until re-tested, and a plausible follow-on hypothesis was
+not trustworthy until it was actually tried. Written against
+`docs/PERFORMANCE_PROTOCOL.md`'s frozen scope. Three of the protocol's
+matrix dimensions were not run this round (signature-count sweep,
+cold/warm state isolation, failure-path timing) — flagged explicitly in
+"Not run this round," not silently dropped. What *was* run answers the
+protocol's central question with enough evidence to make the stop/go
+call the campaign exists to inform.
 
 All data: `measurement/performance/raw/*.jsonl`, one file per batch,
 each with its own load-average record. Environment:
@@ -175,6 +180,53 @@ concurrency measurement is lower-priority than it would have been under
 Batch A's (likely spurious) result, but remains a real open item, not
 silently dropped, for anyone continuing this campaign.
 
+## Batching diagnostic: does round-trip amortization help?
+
+The diagnostic above traced Model S's floor to something other than
+connection setup, leaving open whether it's round-trip count (one
+write-wait-read cycle per decision) or the verification work itself
+(dominated by ML-DSA-65 cost) that actually sets the cost. This is
+directly testable, cheaply, without touching Nix or any C++: extend the
+daemon's protocol with a batch request (one line carries every
+decision; one line returns every result, same order) and measure
+whether N decisions sent as one batched round trip cost less than N
+decisions sent as N individual round trips, on the same already-open
+connection.
+
+Added `IncomingRequest::{Batch,Single}` (untagged enum) to the daemon
+and a standalone Python client
+(`measurement/performance/model-s-batching-diagnostic.py`) that
+alternates individual-call and batch-call rounds against the same
+connection — matching this campaign's interleaving discipline so a
+load spike can't be misread as a real effect. N=5 rounds, 100
+decisions per round, both payload shapes from the earlier diagnostic:
+
+| Payload | Individual, median ms/decision | Batch, median ms/decision | Individual range | Batch range |
+|---|---:|---:|---:|---:|
+| ed25519-only | 16.07 | 14.66 | 14.61–16.31 | 14.28–16.37 |
+| both signatures (ed25519+ml-dsa-65) | 53.71 | 52.68 | 44.10–60.05 | 45.06–67.02 |
+
+**Batching produces no measurable improvement over individual calls,
+for either payload shape — the two distributions overlap almost
+completely, and what small difference exists is within round-to-round
+noise, not a consistent direction.** This decisively refutes the
+batching hypothesis as stated: amortizing round-trip *count* is not the
+lever. Combined with the earlier finding that connection-reuse (which
+already removed connect-per-decision cost) also produced no
+improvement, the remaining explanation is the more mundane one flagged
+as a candidate earlier — the verification work itself (real Ed25519
+and, especially, ML-DSA-65 signature checking) is what costs ~14-54ms
+per decision on this machine, and no transport-level change (spawn a
+process, open a connection, or batch several decisions into one
+round trip) touches that cost, because every one of those framings
+still calls the same verification routine once per decision.
+
+Raw data: `measurement/performance/raw/model-s-batching-diagnostic-batch1.json`.
+
+This also revises the "batching" recommendation this document's Stop/go
+section previously pointed at as the most promising next step for
+O-process — see the correction there.
+
 ## Layer 5: concurrency (1/4/16 concurrent jobs)
 
 Single path per job (isolates the boundary mechanism from Nix's own
@@ -283,23 +335,32 @@ round-trip entirely) would fix. The performance case for taking on a
 new security-sensitive state machine (see
 `docs/CACHE_DECISION_QUESTIONS.md`) is not made by this evidence.
 
-**Overall, corrected**: the process/provider choice is not primarily a
-raw-speed question at single-path granularity (both are fast). At
-closure-throughput granularity, the real cost driver turned out to be
-neither "forking a process" nor "opening a connection" specifically,
-but the cost of a synchronous cross-process verification round-trip
-itself — which O-process pays via fork/exec, and which Model S, even
-with a correctly-implemented and verified warm connection, still pays
-via the round-trip's own floor. **O-provider is the only model
-measured in this campaign that avoids this cost, by avoiding the
-round-trip entirely** — at the TCB cost `docs/CANDIDATE_ARCHITECTURES.md`
-already documents (a compromised provider crashes Nix's own process,
-demonstrated not theoretical). For O-process to become viable at
-realistic multi-path closure sizes, the fix that remains genuinely
-promising is **batching** — one helper invocation per closure, carrying
-every path's evidence together, rather than one invocation (or one
-request) per path — a design change neither Model S nor this
-performance campaign attempted or measured. That is the most
-evidence-backed next step this campaign now points at, not a
-persistent-service successor. None of these conclusions depend on
-building a cache.
+**Overall, corrected twice now**: the process/provider choice is not
+primarily a raw-speed question at single-path granularity (both are
+fast). At closure-throughput granularity, the real cost driver turned
+out to be neither "forking a process" nor "opening a connection" nor
+"one round trip per decision," but the cost of the verification work
+itself — real Ed25519 and ML-DSA-65 signature checking, ~14-54ms per
+decision on this machine depending on how many signatures a decision
+carries — which every transport-level model measured here (fork+exec,
+a reused warm connection, or a batched round trip) still pays exactly
+once per decision, because none of them change how many times
+`verify_raw_evidence()` actually runs. **O-provider is the only model
+measured in this campaign that avoids paying this cost as a
+synchronous cross-process (or cross-connection) round-trip** — not
+because it does less verification work, but because that work happens
+via a direct in-process function call with no serialization, socket,
+or scheduler involvement, so it doesn't additionally pay a round-trip
+floor on top of the verification cost. This is a narrower, more honest
+claim than the campaign's original framing ("avoid fork/exec") — the
+fix that mattered turned out to be "avoid a synchronous IPC boundary
+around verification," not "avoid a process boundary" specifically,
+and the batching diagnostic (above) directly ruled out "just amortize
+the round-trip count" as a substitute fix. This comes at the TCB cost
+`docs/CANDIDATE_ARCHITECTURES.md` already documents (a compromised
+provider crashes Nix's own process, demonstrated not theoretical).
+**There is no remaining evidence-backed transport-level fix for
+O-process** at realistic multi-path closure sizes short of eliminating
+the IPC boundary the way O-provider does — batching, this document's
+prior candidate, was measured directly (above) and refuted. None of
+these conclusions depend on building a cache.

@@ -78,15 +78,19 @@ service prototype built in response, first measured 1.7x faster than
 O-process — but that result **did not replicate**: the identified
 follow-up fix (connection reuse across a closure) was built, directly
 verified to work mechanically, and re-measured, landing statistically
-identical to O-process. The floor turned out to be the synchronous
-verification round-trip itself, not process-spawn or connection-setup
-cost specifically — only O-provider, which eliminates the round-trip
-entirely, escapes it. Do not build authorization caching for any
-model, per
+identical to O-process. A follow-up hypothesis — that batching many
+decisions into one round trip, rather than reusing a connection across
+many round trips, would amortize the remaining floor — was tested
+directly against the daemon and also refuted (batched and individual
+per-decision costs were statistically indistinguishable). The floor
+traces to the synchronous verification work itself, not process-spawn,
+connection-setup, or round-trip *count* specifically — only O-provider,
+which carries out that verification without any round-trip at all,
+escapes it. Do not build authorization caching for any model, per
 [`docs/CACHE_DECISION_QUESTIONS.md`](docs/CACHE_DECISION_QUESTIONS.md)'s
-preserved-but-unanswered question list; the most evidence-backed next
-step for O-process is batching (one helper invocation per closure), not
-a persistent-service successor.
+preserved-but-unanswered question list; this campaign found no
+remaining evidence-backed transport-level fix for O-process short of
+eliminating the IPC boundary the way O-provider does.
 
 ## Documentation
 
