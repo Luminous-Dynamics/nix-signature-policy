@@ -947,38 +947,82 @@ fn same_relation_witnesses(groups: &[(String, BTreeSet<String>)]) -> Option<Vec<
     )
 }
 
+/// Deterministic bipartite maximum matching (Kuhn's algorithm: one
+/// augmenting-path search per group) between relation groups (left) and
+/// their candidate values (right) -- an assignment of a distinct value to
+/// every group is exactly a system of distinct representatives, i.e. a
+/// perfect matching on the groups side. Worst case O(groups^2 * values),
+/// trivial at this project's resource-profile bound of
+/// `MAX_GROUPS_PER_RELATION` (16).
+///
+/// A prior version of this function used unmemoized recursive
+/// backtracking over value assignments, which degrades to exponential
+/// search on Hall-deficient inputs -- e.g. 15 groups whose value sets
+/// collectively span only 14 distinct identities forces the search to
+/// explore on the order of 14! branches before concluding no witness
+/// exists. `distinct_relation_regression::hall_deficient_relation_completes_quickly`
+/// below is the adversarial case that would time out under the old
+/// implementation and completes near-instantly under this one.
 fn distinct_relation_witnesses(
     groups: &[(String, BTreeSet<String>)],
 ) -> Option<Vec<RelationWitness>> {
-    fn assign(
-        groups: &[(String, BTreeSet<String>)],
-        index: usize,
-        used: &mut BTreeSet<String>,
-        witnesses: &mut Vec<RelationWitness>,
+    if groups.is_empty() {
+        return None;
+    }
+
+    // match_of_value[value] = index of the group currently holding that
+    // value in the matching built so far.
+    let mut match_of_value: BTreeMap<&str, usize> = BTreeMap::new();
+
+    fn try_assign<'a>(
+        group_index: usize,
+        groups: &'a [(String, BTreeSet<String>)],
+        visited: &mut BTreeSet<&'a str>,
+        match_of_value: &mut BTreeMap<&'a str, usize>,
     ) -> bool {
-        if index == groups.len() {
-            return true;
-        }
-        let (group, values) = &groups[index];
-        for value in values {
-            if used.insert(value.clone()) {
-                witnesses.push(RelationWitness {
-                    group: group.clone(),
-                    value: value.clone(),
-                });
-                if assign(groups, index + 1, used, witnesses) {
+        for value in &groups[group_index].1 {
+            let value: &str = value.as_str();
+            if visited.insert(value) {
+                let can_take = match match_of_value.get(value) {
+                    None => true,
+                    // This value is already claimed -- recurse to see if
+                    // its current holder can be reassigned to a
+                    // different value, freeing this one up.
+                    Some(&holder) => try_assign(holder, groups, visited, match_of_value),
+                };
+                if can_take {
+                    match_of_value.insert(value, group_index);
                     return true;
                 }
-                witnesses.pop();
-                used.remove(value);
             }
         }
         false
     }
 
-    let mut used = BTreeSet::new();
-    let mut witnesses = Vec::with_capacity(groups.len());
-    assign(groups, 0, &mut used, &mut witnesses).then_some(witnesses)
+    for group_index in 0..groups.len() {
+        let mut visited = BTreeSet::new();
+        if !try_assign(group_index, groups, &mut visited, &mut match_of_value) {
+            return None;
+        }
+    }
+
+    let mut assignment: Vec<Option<&str>> = vec![None; groups.len()];
+    for (&value, &group_index) in &match_of_value {
+        assignment[group_index] = Some(value);
+    }
+
+    Some(
+        groups
+            .iter()
+            .zip(assignment)
+            .map(|((group, _), value)| RelationWitness {
+                group: group.clone(),
+                value: value
+                    .expect("every group is assigned once matching completes for all groups")
+                    .to_string(),
+            })
+            .collect(),
+    )
 }
 
 fn sort_candidate_diagnostics(diagnostics: &mut [CandidateDiagnostic]) {
@@ -1457,6 +1501,68 @@ mod tests {
             0,
         );
         assert_eq!(decision.decision, Decision::Accept);
+    }
+
+    /// `distinct_relation_witnesses()` used to be unmemoized recursive
+    /// backtracking over value assignments, which is exponential on
+    /// Hall-deficient inputs (a family of sets whose union is smaller
+    /// than the family itself, so no system of distinct representatives
+    /// exists -- Hall's marriage theorem). This constructs the sharpest
+    /// such case this project's resource profile allows: 15 groups
+    /// (`MAX_GROUPS_PER_RELATION` is 16), each drawing from a shared pool
+    /// of only 14 identities, so no assignment can succeed and the
+    /// search must exhaust the space before concluding that. Under the
+    /// old backtracking implementation this explores on the order of
+    /// 14! (~87 billion) branches; under Kuhn's-algorithm matching it is
+    /// worst case O(groups^2 * values) and should complete well under a
+    /// second even on a loaded machine.
+    #[test]
+    fn hall_deficient_relation_completes_quickly_and_refuses() {
+        let shared_pool: Vec<String> = (0..14).map(|i| format!("identity-{i}")).collect();
+        let groups: Vec<(String, BTreeSet<String>)> = (0..15)
+            .map(|i| {
+                (
+                    format!("group-{i}"),
+                    shared_pool.iter().cloned().collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect();
+
+        let start = std::time::Instant::now();
+        let result = distinct_relation_witnesses(&groups);
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_none(),
+            "15 groups sharing only 14 identities cannot have distinct representatives"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "Hall-deficient matching took {elapsed:?} -- exponential backtracking regression"
+        );
+    }
+
+    /// The non-adversarial counterpart: 15 groups, 15 distinct
+    /// identities (one more than the deficient case above) -- a system
+    /// of distinct representatives exists (the identity assignment), and
+    /// the matcher must find it, not just fail fast on hard cases.
+    #[test]
+    fn just_enough_identities_allows_a_full_distinct_assignment() {
+        let groups: Vec<(String, BTreeSet<String>)> = (0..15)
+            .map(|i| {
+                let pool: BTreeSet<String> = (0..15).map(|j| format!("identity-{j}")).collect();
+                (format!("group-{i}"), pool)
+            })
+            .collect();
+
+        let witnesses = distinct_relation_witnesses(&groups).expect("a full SDR exists");
+        assert_eq!(witnesses.len(), 15);
+        let distinct_values: BTreeSet<&str> = witnesses.iter().map(|w| w.value.as_str()).collect();
+        assert_eq!(
+            distinct_values.len(),
+            15,
+            "every witness value must be distinct"
+        );
     }
 
     #[test]

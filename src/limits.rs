@@ -209,11 +209,26 @@ pub fn estimate_evaluation_work(
         .iter()
         .map(|clause| clause.required_groups.len() as u64)
         .sum();
+    // distinct_relation_witnesses() (src/policy.rs) evaluates each
+    // relation via Kuhn's-algorithm bipartite matching between the
+    // relation's groups and the candidate values observed for them --
+    // worst case O(groups * edges), where edges are bounded by
+    // groups * bounded_unique_candidates (each group's value set can
+    // hold at most one entry per observed candidate). Counting only
+    // group references here (as a prior version of this function did)
+    // silently assumed O(groups) relation cost, which understated the
+    // real -- now polynomial, not exponential, but not free -- cost of
+    // evaluating a relation once real candidate counts are involved.
     let relation_units = policy
         .accept_if_any
         .iter()
         .flat_map(|clause| &clause.relations)
-        .map(|relation| relation.groups.len() as u64)
+        .map(|relation| {
+            let group_count = relation.groups.len() as u64;
+            group_count
+                .saturating_mul(group_count)
+                .saturating_mul(bounded_unique_candidates as u64)
+        })
         .sum();
     let registry_units = trusted_key_count as u64;
     let total_work_units = (raw_observations as u64)
@@ -382,6 +397,29 @@ mod tests {
         assert_eq!(estimate.group_membership_units, 3);
         assert_eq!(estimate.requirement_units, 1);
         assert!(estimate.total_work_units >= 12);
+    }
+
+    #[test]
+    fn relation_units_scale_with_groups_and_observed_candidates() {
+        use crate::policy::{GroupRelation, RelationAttribute, RelationMode};
+
+        let mut with_relation = policy();
+        with_relation.accept_if_any[0]
+            .relations
+            .push(GroupRelation {
+                relation_id: "distinct-owners".into(),
+                attribute: RelationAttribute::Identity,
+                mode: RelationMode::Distinct,
+                groups: vec!["release".into(), "release".into(), "release".into()],
+            });
+
+        // group_count = 3, bounded_unique_candidates = min(raw_observations, 32).
+        let estimate = estimate_evaluation_work(&with_relation, 2, 5);
+        assert_eq!(estimate.bounded_unique_candidates, 5);
+        assert_eq!(estimate.relation_units, 3 * 3 * 5);
+
+        // A relation-free policy still reports zero relation cost.
+        assert_eq!(estimate_evaluation_work(&policy(), 2, 5).relation_units, 0);
     }
 
     #[test]

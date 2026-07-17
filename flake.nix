@@ -173,6 +173,7 @@
             python3 scripts/check-commitment-vectors.py
             python3 scripts/check-review-package.py
             python3 scripts/check-reference-model.py
+            python3 scripts/check-distinct-relation-matching-performance.py
             python3 scripts/check-authorization-protocol.py
             python3 scripts/check-transition-governance.py
             python3 scripts/build-differential-corpus.py --check

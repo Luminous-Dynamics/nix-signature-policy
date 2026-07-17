@@ -7,8 +7,8 @@ handling, typed group membership, lifecycle eligibility, and relations.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from itertools import permutations
 from typing import Any
 
 
@@ -87,17 +87,81 @@ def attr(member: Member, name: str) -> str:
     }[name]
 
 
+def has_system_of_distinct_representatives(value_sets: list[list[str]]) -> bool:
+    """True iff there is an injective choice of one value per set -- a
+    system of distinct representatives -- decided via Edmonds-Karp
+    max-flow on the natural bipartite network: source -> each set
+    (capacity 1) -> each value in that set (capacity 1) -> sink
+    (capacity 1 per distinct value). A perfect matching on the sets side
+    exists iff max flow equals the number of sets (Hall's theorem).
+
+    Deliberately a different algorithm family from the Rust
+    implementation's bipartite matching (Kuhn's algorithm: DFS
+    augmenting paths). This file previously decided the same question by
+    exhaustively trying itertools.permutations of the values -- an
+    exponential brute force sharing its failure mode with a prior,
+    separately-fixed exponential bug in the Rust evaluator. Two
+    "independent" models that both degrade the same way on the same
+    adversarial input (e.g. 15 sets sharing only 14 values) aren't
+    actually independent for the purpose they exist to serve here.
+    """
+    n = len(value_sets)
+    if n == 0:
+        return False
+
+    source, sink = "__source__", "__sink__"
+    distinct_values = sorted({value for values in value_sets for value in values})
+
+    # adjacency[u][v] = residual capacity of edge u -> v.
+    adjacency: dict[str, dict[str, int]] = {source: {}, sink: {}}
+    for index, values in enumerate(value_sets):
+        set_node = f"__set_{index}__"
+        adjacency.setdefault(set_node, {})
+        adjacency[source][set_node] = 1
+        adjacency[set_node].setdefault(source, 0)
+        for value in values:
+            adjacency[set_node][value] = adjacency[set_node].get(value, 0) + 1
+            adjacency.setdefault(value, {}).setdefault(set_node, 0)
+    for value in distinct_values:
+        adjacency[value][sink] = adjacency[value].get(sink, 0) + 1
+        adjacency[sink].setdefault(value, 0)
+
+    def bfs_augmenting_path() -> list[str] | None:
+        parent: dict[str, str] = {}
+        visited = {source}
+        queue = deque([source])
+        while queue:
+            u = queue.popleft()
+            if u == sink:
+                path = [sink]
+                while path[-1] != source:
+                    path.append(parent[path[-1]])
+                path.reverse()
+                return path
+            for v, capacity in adjacency[u].items():
+                if capacity > 0 and v not in visited:
+                    visited.add(v)
+                    parent[v] = u
+                    queue.append(v)
+        return None
+
+    max_flow = 0
+    while (path := bfs_augmenting_path()) is not None:
+        for u, v in zip(path, path[1:]):
+            adjacency[u][v] -= 1
+            adjacency[v][u] += 1
+        max_flow += 1
+
+    return max_flow == n
+
+
 def relation_satisfied(relation: dict[str, Any], members: dict[str, set[Member]]) -> bool:
     values = [sorted({attr(member, relation["attribute"]) for member in members.get(group, set())}) for group in relation["groups"]]
     if not values:
         return False
     if relation["mode"] == "same":
         return bool(set(values[0]).intersection(*map(set, values[1:])))
-    # Small exhaustive injective assignment; core-v1 relations are bounded.
-    for choices in permutations(sorted(set().union(*map(set, values))), len(values)):
-        if all(choice in group_values for choice, group_values in zip(choices, values, strict=True)):
-            return True
-    return False
+    return has_system_of_distinct_representatives(values)
 
 
 def evaluate(case: dict[str, Any]) -> dict[str, Any]:
