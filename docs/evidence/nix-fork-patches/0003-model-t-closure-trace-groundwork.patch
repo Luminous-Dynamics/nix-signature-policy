@@ -1,0 +1,286 @@
+From f3171536dd6bb245e963ed6356b26a6ec67ac4e8 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 10:43:13 +0200
+Subject: [PATCH] Add queryRealisationsForOutputPath (Model T groundwork)
+
+Fourth slice of the admission-boundary experiment for nix-signature-policy
+(see /srv/luminous-dynamics/nix-signature-policy) -- groundwork for
+"Model T", the closure/build-trace scope this comparison's other four
+models (N, H, O, P) deliberately don't attempt. See
+nix-signature-policy's docs/CLOSURE_TRACE_ARCHAEOLOGY.md for the full
+research this is based on.
+
+Finding: registerDrvOutput's existing same-DrvOutput::id signature
+accumulation can already tell "two signatures on one derivation's
+output" apart -- but its lookup is keyed by DrvOutput::id, which for
+ordinary derivations is derived from the derivation graph itself, not
+from output content. So it structurally cannot see "two independently
+derived builds that both happened to produce this exact output" -- the
+scenario a maintainer raised on the real #14451 thread (two divergent
+`gcc` recipes converging on one byte-identical output), and the concrete
+gap this closes.
+
+queryRealisationsForOutputPath(outputPath): a new query, keyed by the
+concrete output *path* rather than by DrvOutput::id, alongside (not
+replacing) the existing id-keyed queryRealisation_. Finds every
+Realisation registered for that output across every derivation that
+claims to have produced it. Deliberately not a quorum or reproducibility
+judgment -- answers only "who has registered a realisation for this
+output," leaving what to conclude from that to a caller. Requires
+Xp::CaDerivations, matching the rest of the realisation machinery.
+
+Real test, not synthetic: opens an actual temporary SQLite-backed
+LocalStore, registers two hand-built Realisations with different
+(synthetic) drvHash values against the same real, already-valid store
+path, and confirms both are visible together via the new query while
+each individually still resolves only its own registration through the
+unchanged existing queryRealisation() path.
+
+Isolated cleanly from a second concurrently active session's in-progress
+work in this same file (local-store.cc): extracted this change as a
+standalone patch and reapplied it onto a clean base, rather than
+committing their staged-but-uncommitted hook-wiring hunks alongside it.
+---
+ src/libstore-tests/local-store.cc             | 94 +++++++++++++++++++
+ src/libstore/include/nix/store/local-store.hh | 44 +++++++++
+ src/libstore/local-store.cc                   | 38 ++++++++
+ 3 files changed, 176 insertions(+)
+
+diff --git a/src/libstore-tests/local-store.cc b/src/libstore-tests/local-store.cc
+index 554d42e..cc69014 100644
+--- a/src/libstore-tests/local-store.cc
++++ b/src/libstore-tests/local-store.cc
+@@ -1,6 +1,12 @@
+ #include <gtest/gtest.h>
+ 
+ #include "nix/store/local-store.hh"
++#include "nix/store/store-open.hh"
++#include "nix/store/realisation.hh"
++#include "nix/util/file-system.hh"
++#include "nix/util/memory-source-accessor.hh"
++#include "nix/util/hash.hh"
++#include "nix/util/experimental-features.hh"
+ 
+ // Needed for template specialisations. This is not good! When we
+ // overhaul how store configs work, this should be fixed.
+@@ -8,6 +14,8 @@
+ #include "nix/util/config-impl.hh"
+ #include "nix/util/abstract-setting-to-json.hh"
+ 
++#include <filesystem>
++
+ namespace nix {
+ 
+ TEST(LocalStore, constructConfig_rootQueryParam)
+@@ -38,4 +46,90 @@ TEST(LocalStore, constructConfig_to_string)
+     EXPECT_EQ(config.getReference().to_string(), "local");
+ }
+ 
++/**
++ * Model T groundwork (see nix-signature-policy's
++ * docs/CLOSURE_TRACE_ARCHAEOLOGY.md): distinguishing "two signatures on
++ * one derivation's output" (already handled by registerDrvOutput's
++ * existing same-id signature accumulation) from "two independently
++ * derived builds that both produced this exact output" -- the case that
++ * mechanism cannot see today, because its lookup is keyed by
++ * `DrvOutput::id` (derivation-graph-derived for ordinary derivations),
++ * not by the output path itself.
++ *
++ * Deliberately does not build two real derivations to byte-identical
++ * output -- that's the actual hard, unimplemented reproducibility-quorum
++ * problem this test explicitly does not attempt to solve. It register
++ * two hand-built `Realisation`s with different (synthetic) `drvHash`
++ * values against the *same* real, already-valid store path, and checks
++ * only that both are visible together -- the structural capability a
++ * quorum policy would need to exist before it could be built, not the
++ * policy itself.
++ */
++TEST(LocalStore, queryRealisationsForOutputPath_sameOutputPathDifferentDerivations)
++{
++    auto tmpRoot = createTempDir();
++    std::filesystem::create_directories(tmpRoot / "nix/store");
++
++    experimentalFeatureSettings.set("extra-experimental-features", "ca-derivations");
++
++    std::shared_ptr<Store> store = openStore(fmt("local?root=%s", tmpRoot.string()));
++    auto localStore = std::dynamic_pointer_cast<LocalStore>(store);
++    ASSERT_TRUE(localStore) << "expected a LocalStore";
++
++    // One real, already-valid store path -- what two different
++    // "derivations" (represented here only by their DrvOutput, not a
++    // full build) will both claim to have produced.
++    auto outputPath = store->addToStore(
++        "shared-output",
++        SourcePath{[] {
++            auto accessor = make_ref<MemorySourceAccessor>();
++            accessor->root = MemorySourceAccessor::File{
++                MemorySourceAccessor::File::Regular{.executable = false, .contents = "identical output bytes"}};
++            return accessor;
++        }()},
++        ContentAddressMethod::Raw::NixArchive,
++        HashAlgorithm::SHA256);
++
++    DrvOutput drvOutputA{hashString(HashAlgorithm::SHA256, "recipe-a"), "out"};
++    DrvOutput drvOutputB{hashString(HashAlgorithm::SHA256, "recipe-b"), "out"};
++    ASSERT_NE(drvOutputA.strHash(), drvOutputB.strHash()) << "test fixture must use two distinct drvHash values";
++
++    localStore->registerDrvOutput(Realisation{
++        {.outPath = outputPath, .signatures = {Signature{"builder-a-key", "placeholder-sig-a"}}},
++        drvOutputA,
++    });
++    localStore->registerDrvOutput(Realisation{
++        {.outPath = outputPath, .signatures = {Signature{"builder-b-key", "placeholder-sig-b"}}},
++        drvOutputB,
++    });
++
++    // Each individually still resolves only its own registration --
++    // registerDrvOutput's existing same-id behavior is unchanged.
++    auto onlyA = localStore->queryRealisation(drvOutputA);
++    ASSERT_TRUE(onlyA);
++    EXPECT_EQ(onlyA->outPath, outputPath);
++    EXPECT_EQ(onlyA->signatures.size(), 1u);
++
++    // The new query is what makes both visible together, keyed by the
++    // shared output path rather than by either individual DrvOutput::id.
++    auto both = localStore->queryRealisationsForOutputPath(outputPath);
++    ASSERT_EQ(both.size(), 2u) << "both derivations' realisations of the shared output should be visible";
++
++    std::set<std::string> seenDrvHashes;
++    for (auto & entry : both) {
++        EXPECT_EQ(entry.outputName, "out");
++        EXPECT_EQ(entry.signatures.size(), 1u);
++        seenDrvHashes.insert(entry.drvHash);
++    }
++    EXPECT_EQ(seenDrvHashes.size(), 2u) << "the two entries must be attributable to genuinely different DrvOutput::id"
++                                           "s, not one registration counted twice";
++    EXPECT_TRUE(seenDrvHashes.contains(drvOutputA.strHash()));
++    EXPECT_TRUE(seenDrvHashes.contains(drvOutputB.strHash()));
++
++    localStore.reset();
++    store.reset();
++    std::filesystem::remove_all(tmpRoot);
++    experimentalFeatureSettings.set("extra-experimental-features", "");
++}
++
+ } // namespace nix
+diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
+index fde17c3..997904f 100644
+--- a/src/libstore/include/nix/store/local-store.hh
++++ b/src/libstore/include/nix/store/local-store.hh
+@@ -497,6 +497,50 @@ public:
+     void queryRealisationUncached(
+         const DrvOutput &, Callback<std::shared_ptr<const UnkeyedRealisation>> callback) noexcept override;
+ 
++    /**
++     * One registered realisation of a concrete output *path*, naming
++     * which derivation registered it. Distinct from `UnkeyedRealisation`
++     * (which already carries an `outPath` but is looked up by, and thus
++     * implicitly scoped to, one `DrvOutput::id`) -- this exists so a
++     * caller can compare `drvHash` across entries and tell "the same
++     * derivation, signed more than once" apart from "two different
++     * derivations that both produced this exact output."
++     */
++    struct RealisationForOutputPath
++    {
++        /**
++         * `DrvOutput::drvHash` as stored (`Hash::to_string(HashFormat::Base16, true)`,
++         * matching `DrvOutput::strHash()`) -- kept as a string rather than
++         * reconstructing a full `DrvOutput` here, since the hash
++         * algorithm alone doesn't round-trip through this table and this
++         * type only needs to answer "same derivation or not," not
++         * reconstruct one.
++         */
++        std::string drvHash;
++        std::string outputName;
++        std::set<Signature> signatures;
++    };
++
++    /**
++     * Every `Realisation` registered for the concrete store path
++     * `outputPath`, across *every* derivation that has registered one --
++     * not scoped to a single `DrvOutput::id` the way `queryRealisation_`
++     * is. This is the missing half of `registerDrvOutput`'s existing
++     * same-`id` signature-accumulation: that mechanism can already tell
++     * "two signatures on one derivation's output," but has no way to
++     * find realisations registered under a *different* derivation that
++     * happened to produce the identical output path, because its lookup
++     * is keyed by `id` (derivation-graph-derived for ordinary
++     * derivations), not by the output path itself.
++     *
++     * Deliberately not a quorum or reproducibility judgment -- it only
++     * answers "who has registered a realisation for this exact output,"
++     * leaving what to conclude from that (e.g. "N independent
++     * derivations agree") to a caller. Requires `Xp::CaDerivations`,
++     * same as the rest of the realisation machinery this extends.
++     */
++    std::vector<RealisationForOutputPath> queryRealisationsForOutputPath(const StorePath & outputPath);
++
+     std::optional<std::string> getVersion() override;
+ 
+ protected:
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 8dcef12..23209f0 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -111,6 +111,7 @@ struct LocalStore::State::Stmts
+     SQLiteStmt QueryDerivationOutputs;
+     SQLiteStmt QueryRealisedOutput;
+     SQLiteStmt QueryAllRealisedOutputs;
++    SQLiteStmt QueryRealisationsForOutputPath;
+     SQLiteStmt QueryPathFromHashPart;
+     SQLiteStmt QueryValidPaths;
+ };
+@@ -393,6 +394,20 @@ LocalStore::LocalStore(ref<const Config> config)
+                     where drvPath = ?
+                     ;
+             )");
++        // Unlike QueryRealisedOutput (keyed by drvPath+outputName, i.e.
++        // by DrvOutput::id), this is keyed by the concrete output path
++        // itself, so it finds every derivation that has registered a
++        // realisation for that exact output -- including derivations
++        // with a different drvPath. See RealisationForOutputPath's doc
++        // comment for why that distinction matters.
++        state->stmts->QueryRealisationsForOutputPath.create(
++            state->db,
++            R"(
++                select Realisations.drvPath, Realisations.outputName, Realisations.signatures from Realisations
++                    inner join ValidPaths as Output on Output.id = Realisations.outputPath
++                    where Output.path = ?
++                    ;
++            )");
+     }
+ }
+ 
+@@ -1577,6 +1592,29 @@ std::optional<const UnkeyedRealisation> LocalStore::queryRealisation_(LocalStore
+     return {res};
+ }
+ 
++std::vector<LocalStore::RealisationForOutputPath> LocalStore::queryRealisationsForOutputPath(const StorePath & outputPath)
++{
++    experimentalFeatureSettings.require(Xp::CaDerivations);
++
++    return retrySQLite<std::vector<RealisationForOutputPath>>([&]() {
++        auto state(_state->lock());
++
++        std::vector<RealisationForOutputPath> result;
++        auto use(state->stmts->QueryRealisationsForOutputPath.use()(printStorePath(outputPath)));
++        while (use.next()) {
++            auto drvHash = use.getStr(0);
++            auto outputName = use.getStr(1);
++            auto signatures = Signature::parseMany(tokenizeString<StringSet>(use.getStr(2)));
++            result.push_back(RealisationForOutputPath{
++                .drvHash = std::move(drvHash),
++                .outputName = std::move(outputName),
++                .signatures = std::move(signatures),
++            });
++        }
++        return result;
++    });
++}
++
+ void LocalStore::queryRealisationUncached(
+     const DrvOutput & id, Callback<std::shared_ptr<const UnkeyedRealisation>> callback) noexcept
+ {
+-- 
+2.54.0
+

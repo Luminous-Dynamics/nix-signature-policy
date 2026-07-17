@@ -88,10 +88,31 @@ producing both the existing valid-count and a typed
 `vector<VerifiedSignature>`) and `keyTypeProtocolName()` (frozen wire
 algorithm-name strings). Every model that needed the native
 grouped-signature primitive (`KeyGroup` / `allSignatureGroupsSatisfied`)
-cherry-picked it from Model N's own commit rather than re-deriving it,
-per this comparison's isolation discipline (each model's branch is
-independently buildable and testable from the shared foundation, not
-layered on another model's cumulative branch).
+depends on Model N's commit for it, rather than re-deriving it.
+
+**Branch structure, precisely** (correcting an earlier draft's looser
+"isolation discipline" phrasing, which glossed over a real difference
+in how N/P/T vs. H/O-process/O-provider actually relate to each other):
+**N, P, and T are three successive commits on one research branch**
+(`model-n-native-grouped-signatures`, at `8ad4bbe`, `8858bef`, and
+`f317153` respectively) — not three independent branches. **H,
+O-process, and O-provider are each an independent branch**, starting
+fresh from the shared foundation (`11a967a`) and, for O-process and
+O-provider, cherry-picking N's commit onto that fresh start rather than
+building on N's branch directly.
+
+This is legitimate, not a shortcut that compromises any result, and was
+checked rather than assumed: P's commit (`8858bef`) touches only
+`src/nix/{meson.build,verify-signatures-json.{cc,md}}` — zero reference
+to N's `signature-groups.hh` or `KeyGroup`; T's commit (`f317153`)
+touches only `src/libstore{,-tests}/local-store*` — zero reference to
+P's `verify-signatures-json.cc`. Each of P and T would compile and pass
+its own tests identically if cherry-picked alone onto the shared
+foundation, exactly like O-process's and O-provider's own cherry-picks
+of N were. The cumulative branch is a matter of convenience (P and T
+were written after N, in the same research session, and simply weren't
+reset to a fresh branch each time) — verified, not assumed, to have had
+zero effect on either commit's actual diff content or test results.
 
 | Model | Axes | Branch @ commit | Verified evidence tag |
 |---|---|---|---|
@@ -113,6 +134,24 @@ own real design and would have distorted this round's comparison scope.
 Listed here as a labeled reference, not a candidate with evidence behind
 it.
 
+### Reproducibility
+
+`origin` for every checkout used to build every model above is
+`DeterminateSystems/nix-src` itself (upstream) — none of the branches
+cited in the table are pushed to any remote this project controls, and
+no such fork exists. Rather than create and push a new public fork just
+to make commits fetchable, the exact diff for every commit cited above
+is vendored as a `git am`-applyable patch in
+[`docs/evidence/nix-fork-patches/`](evidence/nix-fork-patches/README.md)
+— each verified (not just generated) to reproduce a byte-identical tree
+from the public base commit. The E2E scripts that produced this
+document's correctness-table results for H and O-provider are similarly
+vendored, self-contained and re-run-verified from their vendored
+location, in
+[`docs/evidence/e2e-scripts/`](evidence/e2e-scripts/). See
+[`docs/evidence/README.md`](evidence/README.md) for the full
+reproduction steps.
+
 ### Why H is included despite an author-side gap
 
 H's own committed functional test (`tests/functional/signature-
@@ -121,11 +160,14 @@ via `--option`, which is silently ignored for `LocalStoreConfig`-scoped
 settings (see "A recurring configuration-mechanism gap," below), so the
 test currently validates nothing. Rather than exclude H on that basis,
 its C++ implementation was independently code-reviewed in full and 5 of
-6 documented scenarios were manually reproduced end-to-end with the
-corrected invocation (real keygen, real signing, real substituter, real
-hook processes) — all behaved exactly as documented. The one
-unreproduced scenario (content-addressed paths) was confirmed by code
-review only (an explicit `warn(...); return true;` before any hook
+6 documented scenarios were reproduced end-to-end with the corrected
+invocation (real keygen, real signing, real substituter, real hook
+processes) — all behaved exactly as documented. This reproduction is
+itself committed and re-runnable, not a one-off manual reconstruction:
+`docs/evidence/e2e-scripts/run-h-e2e.sh`, verified to run clean
+end-to-end from that exact vendored location against a real build. The
+one unreproduced scenario (content-addressed paths) was confirmed by
+code review only (an explicit `warn(...); return true;` before any hook
 logic runs), matching the same shortcut this comparison's own O-provider
 CA-path handling uses. H is included on the strength of that independent
 reproduction, not the strength of its own (currently non-functional)
@@ -242,11 +284,18 @@ process), not a gap in this comparison's test coverage.
 both split "did this verify" from "does policy accept it," a
 compromised external component's damage is bounded to the half of the
 question it was given (crypto-only for O-process's helper; policy-only
-for P's evaluator). H's helper receives raw evidence and returns an
-opaque decision, so a compromised H helper's damage is unbounded within
-"can this helper lie about anything it was asked" — the two failure
-modes (bad crypto claim vs. bad policy call) are indistinguishable
-because H never separates them.
+for P's evaluator). To be precise about what "bounded" means for H, so
+this isn't overstated in either direction: a compromised H helper is
+**not** unbounded in the sense of widening admission under conjunctive
+mode — Nix's own native check `B` still has to independently pass, the
+same ceiling every model in this comparison has. H's actual weakness is
+narrower and more specific than "unbounded damage": because its helper
+receives raw evidence and returns one opaque decision, **cryptographic
+dishonesty and policy dishonesty cannot be distinguished, or
+independently constrained, from each other** — a reviewer auditing H
+has no way to ask "is this helper trustworthy about crypto" separately
+from "is this helper trustworthy about policy," because H's design
+never poses those as two questions in the first place.
 
 **O-provider is the only model in this comparison where "compromised
 verifier" and "process crash/memory corruption of Nix itself" are the

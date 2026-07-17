@@ -1,0 +1,6 @@
+dest-h-*/
+dest-oprovider-*/
+dest-oprovider-crash.std*
+provider/*.so
+hook-refuse.sh
+hook-crash.sh

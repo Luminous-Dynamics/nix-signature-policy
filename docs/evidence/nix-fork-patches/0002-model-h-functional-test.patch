@@ -1,0 +1,236 @@
+From 8a01e8cefcdaa0671806d2ff1d34134f6c84dae1 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 01:37:28 +0200
+Subject: [PATCH] Add functional test scenarios for the
+ signature-authorization-hook boundary
+
+tests/functional/signature-authorization-hook.sh, registered in
+tests/functional/meson.build. Covers the scenarios from the
+admission-boundary-experiment-v1 plan's verification section, using
+minimal shell-script hook stand-ins (only the one JSON field this Nix
+patch actually reads -- "decision" -- not the real nix-signature-policy
+protocol, which is tested independently and far more thoroughly in that
+project's own suite):
+
+1. hook unset: legacy-equivalent behavior (implicit baseline for the
+   other scenarios, via the accept-hook positive control).
+2. hook always-refuses, conjunctive mode: a trusted-public-keys-valid
+   path is still rejected -- the core claim.
+3. hook missing or crashing: rejection, not silent acceptance, plus a
+   positive control proving the same setup succeeds when the hook
+   actually accepts (so 2/3 are shown to fail because of the hook's
+   verdict specifically, not because conjunctive mode broke admission
+   outright).
+4. two substituters offering the same logical build with differing
+   signing identities; a hook that inspects the candidate's key_name
+   refuses the first, accepts the second -- substitution succeeds via
+   the second candidate (the corrected, internally-consistent version
+   of the earlier draft's governed/ungoverned-substituter scenario).
+5. a content-addressed path is admitted under legacy mode (existing
+   short-circuit, unchanged) but explicitly refused under conjunctive
+   mode -- proves CA paths cannot be used to bypass conjunctive mode.
+6. legacy mode with a hook path configured never launches it, checked
+   via a sentinel file the hook would create if invoked.
+
+Not yet run to a verified pass/fail result: the local build environment
+is under heavy, unrelated load from concurrent sessions on this
+machine (load average 24-38, 12 concurrent Claude sessions), and two
+background full-suite test attempts were externally killed before
+completing. The meson/ninja registration and reconfigure is running now;
+authored against real settings names, real CLI patterns copied from
+signing.sh/binary-cache.sh/post-hook.sh, and real JSON field names
+confirmed by the earlier protocol compatibility spike -- but "authored
+carefully" is not the same claim as "observed passing," and this commit
+message does not claim the latter.
+---
+ tests/functional/meson.build                  |   1 +
+ .../signature-authorization-hook.sh           | 165 ++++++++++++++++++
+ 2 files changed, 166 insertions(+)
+ create mode 100755 tests/functional/signature-authorization-hook.sh
+
+diff --git a/tests/functional/meson.build b/tests/functional/meson.build
+index d3d4232..0fe01e1 100644
+--- a/tests/functional/meson.build
++++ b/tests/functional/meson.build
+@@ -86,6 +86,7 @@ suites = [
+       'optimise-store.sh',
+       'substitute-with-invalid-ca.sh',
+       'signing.sh',
++      'signature-authorization-hook.sh',
+       'hash-convert.sh',
+       'hash-path.sh',
+       'gc-non-blocking.sh',
+diff --git a/tests/functional/signature-authorization-hook.sh b/tests/functional/signature-authorization-hook.sh
+new file mode 100755
+index 0000000..030a9fb
+--- /dev/null
++++ b/tests/functional/signature-authorization-hook.sh
+@@ -0,0 +1,165 @@
++#!/usr/bin/env bash
++
++# Functional tests for the experimental signature-authorization-hook
++# admission boundary (see LocalStore::pathInfoIsUntrusted,
++# src/libutil/authorization-caller.cc). Each scenario below corresponds
++# to one line item in the admission-boundary-experiment-v1 plan's
++# "Verification plan" section.
++#
++# The hook scripts here are minimal stand-ins speaking only the one
++# field (`decision`) this Nix patch actually reads from a hook's JSON
++# response -- they are not the real nix-signature-policy policy engine,
++# which is tested independently and much more thoroughly in that
++# project's own suite. This file tests Nix's side of the contract:
++# that the configured hook is consulted (or correctly not consulted)
++# at the right points, and that its verdict is composed with native
++# trust the way the design requires.
++
++experimental_features="configurable-signature-authorization"
++
++source common.sh
++
++TODO_NixOS
++
++needLocalStore "conjunctive-mode admission is a LocalStore-only decision point"
++
++clearStore
++clearCacheCache
++
++nix key generate-secret --key-name cache1.example.org --key-type ed25519 > "$TEST_ROOT"/sk1
++nix key convert-secret-to-public < "$TEST_ROOT"/sk1 > "$TEST_ROOT"/pk1
++pk1=$(cat "$TEST_ROOT"/pk1)
++
++outPath=$(nix-build dependencies.nix --no-out-link --secret-key-files "$TEST_ROOT/sk1")
++nix copy --to "file://$cacheDir" "$outPath"
++
++acceptHook="$TEST_ROOT/hook-accept.sh"
++cat > "$acceptHook" <<'EOF'
++#!/bin/sh
++cat > /dev/null
++echo '{"decision":"accept"}'
++EOF
++chmod +x "$acceptHook"
++
++refuseHook="$TEST_ROOT/hook-refuse.sh"
++cat > "$refuseHook" <<'EOF'
++#!/bin/sh
++cat > /dev/null
++echo '{"decision":"refuse"}'
++EOF
++chmod +x "$refuseHook"
++
++crashHook="$TEST_ROOT/hook-crash.sh"
++cat > "$crashHook" <<'EOF'
++#!/bin/sh
++cat > /dev/null
++exit 1
++EOF
++chmod +x "$crashHook"
++
++# A hook that records whether it was ever invoked, for the
++# legacy-mode-never-launches-the-hook sentinel (scenario 6).
++sentinelMarker="$TEST_ROOT/hook-invoked-marker"
++sentinelHook="$TEST_ROOT/hook-sentinel.sh"
++cat > "$sentinelHook" <<EOF
++#!/bin/sh
++touch "$sentinelMarker"
++cat > /dev/null
++echo '{"decision":"accept"}'
++EOF
++chmod +x "$sentinelHook"
++
++# A hook that only accepts a specific key name, for the
++# differing-evidence fallback scenario (4).
++selectiveHook="$TEST_ROOT/hook-selective.sh"
++cat > "$selectiveHook" <<'EOF'
++#!/bin/sh
++request=$(cat)
++keyName=$(echo "$request" | jq -r '.candidates[0].key_name // empty')
++if [ "$keyName" = "cacheGood.example.org" ]; then
++    echo '{"decision":"accept"}'
++else
++    echo '{"decision":"refuse"}'
++fi
++EOF
++chmod +x "$selectiveHook"
++
++storeOpts=(--option signature-authorization-hook "$acceptHook" --option signature-authorization-mode conjunctive)
++
++# --- Scenario 1: hook unset -> byte-identical behavior to legacy admission ---
++clearStore
++nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1"
++[ -x "$outPath/program" ]
++
++# --- Scenario 2: hook always-refuses, conjunctive mode -> a trusted-public-keys-valid path is still rejected ---
++clearStore
++(! nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1" \
++    --option signature-authorization-hook "$refuseHook" --option signature-authorization-mode conjunctive)
++
++# --- Scenario 3: hook missing/crashing -> rejection, not silent accept ---
++clearStore
++(! nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1" \
++    --option signature-authorization-hook "$crashHook" --option signature-authorization-mode conjunctive)
++clearStore
++(! nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1" \
++    --option signature-authorization-hook "$TEST_ROOT/does-not-exist.sh" --option signature-authorization-mode conjunctive)
++
++# Positive control: the accept hook actually does let the same path through
++# under conjunctive mode -- scenarios 2/3 are refusing because of the hook's
++# verdict specifically, not because conjunctive mode broke admission outright.
++clearStore
++nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1" \
++    --option signature-authorization-hook "$acceptHook" --option signature-authorization-mode conjunctive
++[ -x "$outPath/program" ]
++
++# --- Scenario 4: two candidates with differing evidence; the first refused, the second accepted, substitution succeeds via the second ---
++clearStore
++clearCacheCache
++
++nix key generate-secret --key-name cacheBad.example.org --key-type ed25519 > "$TEST_ROOT"/skBad
++nix key convert-secret-to-public < "$TEST_ROOT"/skBad > "$TEST_ROOT"/pkBad
++pkBad=$(cat "$TEST_ROOT"/pkBad)
++
++nix key generate-secret --key-name cacheGood.example.org --key-type ed25519 > "$TEST_ROOT"/skGood
++nix key convert-secret-to-public < "$TEST_ROOT"/skGood > "$TEST_ROOT"/pkGood
++pkGood=$(cat "$TEST_ROOT"/pkGood)
++
++outPath2=$(nix-build simple.nix --no-out-link --secret-key-files "$TEST_ROOT/skBad $TEST_ROOT/skGood")
++
++cacheDirBad="$TEST_ROOT/cache-bad"
++cacheDirGood="$TEST_ROOT/cache-good"
++rm -rf "$cacheDirBad" "$cacheDirGood"
++nix copy --to "file://$cacheDirBad"?secret-key="$TEST_ROOT"/skBad "$outPath2"
++nix copy --to "file://$cacheDirGood"?secret-key="$TEST_ROOT"/skGood "$outPath2"
++
++clearStore
++nix-store -r "$outPath2" \
++    --substituters "file://$cacheDirBad file://$cacheDirGood" \
++    --trusted-public-keys "$pkBad $pkGood" \
++    --option signature-authorization-hook "$selectiveHook" --option signature-authorization-mode conjunctive
++
++# --- Scenario 5: content-addressed path in conjunctive mode is explicitly refused, not silently admitted via the legacy CA short-circuit ---
++clearStore
++clearCacheCache
++
++# preserve quotes variables in the single-quoted string
++# shellcheck disable=SC2016
++outPathCA=$(IMPURE_VAR1=foo IMPURE_VAR2=bar nix-build ./fixed.nix -A good.0 --no-out-link)
++nix copy --to "file://$cacheDir" "$outPathCA"
++
++clearStore
++# Legacy mode: content-addressed paths need no signature, as always.
++nix-store -r "$outPathCA" --substituters "file://$cacheDir" --no-require-sigs
++
++clearStore
++# Conjunctive mode: this experiment does not support CA paths -- must be
++# refused, never silently treated as admitted via the CA short-circuit.
++(! nix-store -r "$outPathCA" --substituters "file://$cacheDir" --no-require-sigs \
++    --option signature-authorization-hook "$acceptHook" --option signature-authorization-mode conjunctive)
++
++# --- Scenario 6: legacy mode never launches the hook, even if a path is configured ---
++clearStore
++rm -f "$sentinelMarker"
++nix-store -r "$outPath" --substituters "file://$cacheDir" --trusted-public-keys "$pk1" \
++    --option signature-authorization-hook "$sentinelHook" --option signature-authorization-mode legacy
++[ ! -e "$sentinelMarker" ]
+-- 
+2.54.0
+

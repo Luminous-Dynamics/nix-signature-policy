@@ -1,0 +1,574 @@
+From 251677ec600bfb661e4cfae6e3a31c55a2527ef7 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 01:30:04 +0200
+Subject: [PATCH] Wire conjunctive-mode composition into pathInfoIsUntrusted,
+ add the hardened hook caller
+
+Closes the two remaining pieces from the prior checkpoint's amend list:
+
+- LocalStore::pathInfoIsUntrusted composes B (native trust), I (via
+  isContentAddressed), and P (the external hook's verdict) per
+  signature-authorization-mode:
+  - legacy: unchanged behavior exactly, hook never launched even if a
+    path is configured (regression-tested by a later functional-test
+    scenario, not yet added).
+  - conjunctive: content-addressed paths are explicitly refused (not
+    silently equivalent to legacy, per the CA-bypass finding from the
+    earlier archaeology pass); native refusal short-circuits without
+    consulting the hook (conjunctive can only add a requirement); a
+    hook Accept verdict is required in addition to native trust.
+  Both the pre-download filter (substitution-goal.cc) and post-download
+  gate (addToStore) go through this one function via virtual dispatch,
+  confirmed by reading the call sites -- no separate substitution-goal.cc
+  change needed.
+- New src/libutil/authorization-caller.{hh,cc}: AuthorizationHookConfig::validate
+  enforces absolute-path and timeout-bound preconditions once, before any
+  invocation. invokeSignatureAuthorizationHook spawns the configured hook
+  via startProcess + direct execve (no shell, no PATH lookup, cleared
+  environment), drains stdout/stderr on reader threads armed before the
+  stdin write (closes a deadlock class a naive implementation would hit),
+  and enforces a timeout via a separate waiter thread plus a dual
+  process-group-and-direct-pid SIGKILL on expiry (the latter closes a
+  narrow race where the child hasn't reached its own setpgid(0,0) yet
+  when the timeout fires). Output from a failed invocation is never
+  inspected -- the timeout branch returns before stdoutResult/stderrResult
+  are touched at all. Exit code is checked against the documented {0,10}
+  before the response body is parsed at all; anything else is Failure
+  regardless of stdout content.
+
+Builds the JSON request via the dynamic-request shape added to
+nix-signature-policy in the prior commit (candidates/built_in_decision/
+evaluation_context/enforcement_mode only -- no policy or trust_registry
+inline).
+
+Registered in src/libutil/meson.build (source) and
+src/libutil/include/nix/util/meson.build (installed header).
+
+Verified: `ninja -C build-check` succeeds cleanly across the entire
+workspace (301/301), including nix-util-tests and nix-store-tests
+linking successfully -- nothing else in the tree broke. First compile
+attempt caught two real bugs, not hypothetical ones: this codebase
+shadows POSIX read/write with span-based nix::read/nix::write that
+throw SystemError on failure, requiring explicit exception handling
+around every call site (an uncaught exception escaping a std::thread
+body would std::terminate the whole process).
+---
+ src/libstore/local-store.cc                   |  65 +++-
+ src/libutil/authorization-caller.cc           | 287 ++++++++++++++++++
+ .../include/nix/util/authorization-caller.hh  |  98 ++++++
+ src/libutil/include/nix/util/meson.build      |   1 +
+ src/libutil/meson.build                       |   1 +
+ 5 files changed, 451 insertions(+), 1 deletion(-)
+ create mode 100644 src/libutil/authorization-caller.cc
+ create mode 100644 src/libutil/include/nix/util/authorization-caller.hh
+
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 8dcef12..80732cb 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -18,9 +18,11 @@
+ #include "nix/util/users.hh"
+ #include "nix/store/store-registration.hh"
+ #include "nix/util/provenance.hh"
++#include "nix/util/authorization-caller.hh"
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <chrono>
+ 
+ #include <memory>
+ #include <new>
+@@ -1000,7 +1002,68 @@ const PublicKeys & LocalStore::getPublicKeys()
+ 
+ bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info)
+ {
+-    return config->requireSigs && !info.checkSignatures(*this, getPublicKeys());
++    if (!config->requireSigs)
++        return false;
++
++    auto sigCheck = info.checkSignaturesDetailed(*this, getPublicKeys());
++    bool nativeTrusted = sigCheck.validCount != 0;
++
++    auto mode = config->signatureAuthorizationMode.get();
++
++    if (mode == "legacy")
++        // Never launches the hook, even if a path is configured -- this
++        // is the mode's whole point, not something to "fix" later.
++        return !nativeTrusted;
++
++    if (mode != "conjunctive")
++        throw Error(
++            "invalid 'signature-authorization-mode' \"%s\"; must be 'legacy' or 'conjunctive'", mode);
++
++    auto hookConfig = AuthorizationHookConfig::validate(
++        config->signatureAuthorizationHook.get(), config->signatureAuthorizationTimeoutMs.get());
++
++    if (info.isContentAddressed(*this)) {
++        // v1 does not support conjunctive-mode policy evaluation for
++        // content-addressed paths. Explicit fail-closed rather than
++        // silently falling back to the native-only CA short-circuit,
++        // which would make conjunctive mode equivalent to legacy for
++        // every CA path -- a real bypass relative to what enabling
++        // conjunctive mode would lead an operator to expect.
++        warn(
++            "refusing content-addressed path '%s': signature-authorization-mode=conjunctive "
++            "does not support content-addressed paths in this experiment",
++            printStorePath(info.path));
++        return true;
++    }
++
++    if (!nativeTrusted)
++        // B already refuses; conjunctive mode can only add a requirement
++        // on top of B, never override its refusal -- no need to consult
++        // the hook when the AND is already false.
++        return true;
++
++    std::vector<AuthorizationCandidate> candidates;
++    candidates.reserve(sigCheck.verified.size());
++    for (auto & sig : sigCheck.verified)
++        candidates.push_back(AuthorizationCandidate{
++            .keyName = sig.keyName,
++            .keyType = sig.keyType,
++            .signatureId = sig.signatureId,
++        });
++
++    auto verdict = invokeSignatureAuthorizationHook(
++        hookConfig,
++        // Reached only when nativeTrusted is true (see above).
++        BuiltInSignatureDecision::Accept,
++        candidates,
++        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
++            .count());
++
++    // Failure (timeout, crash, malformed response, protocol mismatch) is
++    // never treated as acceptance -- see AuthorizationVerdict's own
++    // documentation for why this isn't merely the common case but a
++    // structural guarantee.
++    return verdict != AuthorizationVerdict::Accept;
+ }
+ 
+ bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
+diff --git a/src/libutil/authorization-caller.cc b/src/libutil/authorization-caller.cc
+new file mode 100644
+index 0000000..c5d525e
+--- /dev/null
++++ b/src/libutil/authorization-caller.cc
+@@ -0,0 +1,287 @@
++#include "nix/util/authorization-caller.hh"
++#include "nix/util/processes.hh"
++#include "nix/util/file-descriptor.hh"
++#include "nix/util/error.hh"
++
++#include <nlohmann/json.hpp>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <filesystem>
++#include <span>
++#include <thread>
++
++#include <signal.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++namespace nix {
++
++namespace {
++
++constexpr size_t MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
++constexpr size_t MAX_DIAGNOSTIC_BYTES = 64 * 1024;
++constexpr unsigned int MAX_REASONABLE_TIMEOUT_MS = 60000;
++
++struct DrainResult
++{
++    std::string data;
++    bool overflowed = false;
++};
++
++/**
++ * Read `fd` to EOF, capping retained bytes at `cap`. Continues reading
++ * (and discarding) past the cap rather than stopping early, so a
++ * verbose child is never left blocked on a full pipe by a caller that
++ * stopped listening -- that would defeat the point of draining
++ * concurrently with the wait/timeout loop.
++ */
++DrainResult drainBounded(int fd, size_t cap)
++{
++    DrainResult result;
++    std::byte chunk[65536];
++    while (true) {
++        size_t n;
++        try {
++            // nix::read handles EINTR internally and throws SystemError
++            // on failure; treat any such failure as end-of-stream for
++            // draining purposes (a hostile or crashed child shouldn't
++            // hang this loop, and the exit-status/timeout path already
++            // governs the overall verdict).
++            n = read(fd, std::span(chunk));
++        } catch (SystemError &) {
++            break;
++        }
++        if (n == 0)
++            break;
++        size_t room = result.data.size() < cap ? cap - result.data.size() : 0;
++        size_t take = std::min(room, n);
++        if (take > 0)
++            result.data.append(reinterpret_cast<const char *>(chunk), take);
++        if (take < n)
++            result.overflowed = true;
++    }
++    return result;
++}
++
++/** Write all of `data` to `fd`. A child that closes its stdin early or
++ *  never reads it at all just stops this loop early (via the caught
++ *  SystemError, typically EPIPE) -- the exit-status/timeout path
++ *  decides the overall verdict, not this function. */
++void writeAll(int fd, std::string_view data)
++{
++    size_t written = 0;
++    while (written < data.size()) {
++        auto remaining =
++            std::as_bytes(std::span(data.data() + written, data.size() - written));
++        size_t n;
++        try {
++            n = write(fd, remaining, /*allowInterrupts=*/false);
++        } catch (SystemError &) {
++            break;
++        }
++        if (n == 0)
++            break;
++        written += n;
++    }
++}
++
++std::string buildDynamicRequestJson(
++    BuiltInSignatureDecision builtInDecision,
++    const std::vector<AuthorizationCandidate> & candidates,
++    int64_t evaluationTimeUnixSeconds)
++{
++    auto candidatesJson = nlohmann::json::array();
++    for (auto & c : candidates) {
++        candidatesJson.push_back(
++            {
++                {"key_name", c.keyName},
++                {"algorithm", std::string(keyTypeProtocolName(c.keyType))},
++                {"signature_id", c.signatureId},
++                {"verification", "valid"},
++            });
++    }
++    nlohmann::json j = {
++        {"contract_version", 2},
++        {"enforcement_mode", "conjunctive"},
++        {"built_in_decision", builtInDecision == BuiltInSignatureDecision::Accept ? "accept" : "refuse"},
++        {"evaluation_context",
++         {
++             {"evaluation_time", evaluationTimeUnixSeconds},
++             {"minimum_policy_epoch", 0},
++             {"minimum_registry_epoch", 0},
++         }},
++        {"candidates", candidatesJson},
++    };
++    return j.dump();
++}
++
++} // namespace
++
++AuthorizationHookConfig::AuthorizationHookConfig(std::string hookPath, std::chrono::milliseconds timeout)
++    : hookPath(std::move(hookPath))
++    , timeout(timeout)
++{
++}
++
++AuthorizationHookConfig AuthorizationHookConfig::validate(std::string_view hookPath, unsigned int timeoutMs)
++{
++    if (hookPath.empty())
++        throw UsageError(
++            "'signature-authorization-hook' must be set when 'signature-authorization-mode' is 'conjunctive'");
++
++    std::filesystem::path path{hookPath};
++    if (!path.is_absolute())
++        throw UsageError(
++            "'signature-authorization-hook' must be an absolute path (got '%s'); no PATH lookup is ever performed",
++            hookPath);
++
++    if (timeoutMs == 0)
++        throw UsageError("'signature-authorization-timeout-ms' must be nonzero");
++    if (timeoutMs > MAX_REASONABLE_TIMEOUT_MS)
++        throw UsageError(
++            "'signature-authorization-timeout-ms' (%d) exceeds the maximum of %d",
++            timeoutMs,
++            MAX_REASONABLE_TIMEOUT_MS);
++
++    return AuthorizationHookConfig{std::string{hookPath}, std::chrono::milliseconds{timeoutMs}};
++}
++
++AuthorizationVerdict invokeSignatureAuthorizationHook(
++    const AuthorizationHookConfig & config,
++    BuiltInSignatureDecision builtInDecision,
++    const std::vector<AuthorizationCandidate> & candidates,
++    int64_t evaluationTimeUnixSeconds)
++{
++    auto requestJson = buildDynamicRequestJson(builtInDecision, candidates, evaluationTimeUnixSeconds);
++
++    Pipe stdinPipe, stdoutPipe, stderrPipe;
++    stdinPipe.create();
++    stdoutPipe.create();
++    stderrPipe.create();
++
++    // Raw fds captured once, before fork, for use in the child lambda
++    // (which must not touch any Nix C++ object shared with the parent
++    // beyond what it explicitly captures by value/reference here).
++    int stdinReadFd = stdinPipe.readSide.get();
++    int stdoutWriteFd = stdoutPipe.writeSide.get();
++    int stderrWriteFd = stderrPipe.writeSide.get();
++    const std::string hookPath = config.hookPath;
++
++    pid_t rawPid = startProcess([hookPath, stdinReadFd, stdoutWriteFd, stderrWriteFd]() {
++        // Child, after fork, before exec.
++        if (setpgid(0, 0) != 0)
++            _exit(127);
++
++        if (dup2(stdinReadFd, STDIN_FILENO) == -1)
++            _exit(127);
++        if (dup2(stdoutWriteFd, STDOUT_FILENO) == -1)
++            _exit(127);
++        if (dup2(stderrWriteFd, STDERR_FILENO) == -1)
++            _exit(127);
++
++        unix::closeExtraFDs();
++
++        // Direct exec, no shell; absolute path only, so this never
++        // performs a PATH search; cleared and explicitly reconstructed
++        // (here: empty) environment, not inherited.
++        char * const argv[] = {const_cast<char *>(hookPath.c_str()), nullptr};
++        char * const envp[] = {nullptr};
++        execve(hookPath.c_str(), argv, envp);
++        // execve only returns on failure.
++        _exit(127);
++    });
++
++    // Parent: close the ends only the child should hold.
++    stdinPipe.readSide.close();
++    stdoutPipe.writeSide.close();
++    stderrPipe.writeSide.close();
++
++    // Reader threads armed before anything that could block the
++    // parent -- including the stdin write below -- so a helper that
++    // fills a pipe buffer before (or instead of) reading its own
++    // stdin cannot deadlock this caller.
++    DrainResult stdoutResult, stderrResult;
++    std::thread stdoutReader(
++        [&] { stdoutResult = drainBounded(stdoutPipe.readSide.get(), MAX_RESPONSE_BYTES); });
++    std::thread stderrReader(
++        [&] { stderrResult = drainBounded(stderrPipe.readSide.get(), MAX_DIAGNOSTIC_BYTES); });
++
++    writeAll(stdinPipe.writeSide.get(), requestJson);
++    stdinPipe.writeSide.close();
++
++    // The blocking wait lives on its own thread so the raw pid can be
++    // used for a group SIGKILL from the main thread on timeout without
++    // any synchronization on the Pid object itself (only the waiter
++    // thread ever touches it).
++    std::atomic<bool> completed{false};
++    int status = 0;
++    std::thread waiter([&] {
++        Pid pid(rawPid);
++        status = pid.wait(/*allowInterrupts=*/false);
++        completed.store(true, std::memory_order_release);
++    });
++
++    auto deadline = std::chrono::steady_clock::now() + config.timeout;
++    while (!completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
++        std::this_thread::sleep_for(std::chrono::milliseconds(5));
++
++    bool timedOut = !completed.load(std::memory_order_acquire);
++    if (timedOut) {
++        // Failure path, not a graceful shutdown. Send both a
++        // process-group SIGKILL (targets the child and anything it
++        // spawned, once it has reached its own setpgid(0, 0) call) and
++        // a direct-pid SIGKILL (targets the child immediately, closing
++        // the narrow window between fork() returning here and the
++        // child's setpgid call actually landing, during which -rawPid
++        // is not yet a valid process-group id and would otherwise
++        // fail with ESRCH). Neither call touches the Pid object living
++        // on the waiter thread -- only the immutable raw pid captured
++        // before fork. The waiter's blocked wait() unblocks once the
++        // child dies either way, so joining it below always completes
++        // and always reaps -- there is no code path that skips
++        // reaping the child.
++        ::kill(-rawPid, SIGKILL);
++        ::kill(rawPid, SIGKILL);
++    }
++
++    waiter.join();
++    stdoutReader.join();
++    stderrReader.join();
++
++    if (timedOut)
++        // Output from a failed invocation is never read, structurally
++        // -- not merely "usually ignored". This return happens before
++        // stdoutResult/stderrResult are inspected at all.
++        return AuthorizationVerdict::Failure;
++
++    if (stdoutResult.overflowed || !WIFEXITED(status))
++        return AuthorizationVerdict::Failure;
++
++    int exitCode = WEXITSTATUS(status);
++    // nix-signature-authorize documents 0 (accept) and 10 (refuse) as
++    // the only successful-protocol exit codes; anything else is a
++    // protocol failure, not a decision, even if stdout happens to
++    // contain something JSON-shaped.
++    if (exitCode != 0 && exitCode != 10)
++        return AuthorizationVerdict::Failure;
++
++    try {
++        // nlohmann::json::parse rejects trailing non-whitespace bytes
++        // after the first value by default -- this is exactly the
++        // "exactly one JSON value" requirement, not an assumption.
++        auto parsed = nlohmann::json::parse(stdoutResult.data);
++        auto decision = parsed.at("decision").get<std::string>();
++        if (decision == "accept")
++            return AuthorizationVerdict::Accept;
++        if (decision == "refuse")
++            return AuthorizationVerdict::Refuse;
++        return AuthorizationVerdict::Failure;
++    } catch (...) {
++        return AuthorizationVerdict::Failure;
++    }
++}
++
++} // namespace nix
+diff --git a/src/libutil/include/nix/util/authorization-caller.hh b/src/libutil/include/nix/util/authorization-caller.hh
+new file mode 100644
+index 0000000..2e1040d
+--- /dev/null
++++ b/src/libutil/include/nix/util/authorization-caller.hh
+@@ -0,0 +1,98 @@
++#pragma once
++///@file
++
++#include <chrono>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "nix/util/signature/local-keys.hh"
++
++namespace nix {
++
++/**
++ * One positively verified signature observation, transport-neutral (does
++ * not depend on `ValidPathInfo` so this header has no `libstore` dependency).
++ * Mirrors `ValidPathInfo::VerifiedSignature`; callers construct this from
++ * that type's fields.
++ */
++struct AuthorizationCandidate
++{
++    std::string keyName;
++    KeyType keyType;
++    std::string signatureId;
++};
++
++/**
++ * Nix's own trusted-signature result for the artifact being evaluated,
++ * independent of the external hook -- what nix-signature-policy's wire
++ * protocol calls `built_in_decision`.
++ */
++enum struct BuiltInSignatureDecision {
++    Accept,
++    Refuse,
++};
++
++/**
++ * The result of consulting the external authorization hook.
++ *
++ * `Failure` is kept distinct from `Refuse` for diagnostics only
++ * (mismatched executable, crash, timeout, malformed/oversized response,
++ * unsupported protocol version) -- every caller in `conjunctive` mode
++ * MUST treat `Failure` exactly like `Refuse`; this type deliberately does
++ * not offer a way to treat them differently, because doing so is exactly
++ * the "indeterminate silently becomes accept" mistake this whole
++ * experiment exists to rule out.
++ */
++enum struct AuthorizationVerdict {
++    Accept,
++    Refuse,
++    Failure,
++};
++
++/**
++ * Validated, ready-to-use hook configuration. Constructed only via
++ * `AuthorizationHookConfig::validate`, which is the single place absolute-path,
++ * timeout-bound, and other configuration-time checks live -- `invokeSignatureAuthorizationHook`
++ * itself assumes a config it receives is already valid and does not re-check.
++ */
++class AuthorizationHookConfig
++{
++    AuthorizationHookConfig(std::string hookPath, std::chrono::milliseconds timeout);
++
++public:
++    const std::string hookPath;
++    const std::chrono::milliseconds timeout;
++
++    /**
++     * Validate raw settings values (as strings, matching how `Setting<std::string>`/
++     * `Setting<unsigned int>` deliver them) into a config, or throw a
++     * `UsageError` describing exactly which precondition failed:
++     * - `hookPath` must be a non-empty, absolute path (no `PATH` search is
++     *   ever performed);
++     * - `timeoutMs` must be nonzero and no larger than `maxReasonableTimeoutMs`
++     *   (60000 -- an admission decision hanging substitution for longer than
++     *   a minute is a configuration error, not a slow-but-valid hook).
++     */
++    static AuthorizationHookConfig validate(std::string_view hookPath, unsigned int timeoutMs);
++};
++
++/**
++ * Invoke the configured external authorization hook for one store path's
++ * built-in decision and verified signature observations, and return its
++ * verdict.
++ *
++ * Never throws for hook misbehavior of any kind (missing executable, crash,
++ * signal, timeout, oversized/malformed output, protocol-version mismatch,
++ * more than one JSON value, trailing bytes) -- all of these produce
++ * `AuthorizationVerdict::Failure`. May throw only for genuine programmer
++ * error in how this function is called, never based on anything the
++ * external process does.
++ */
++AuthorizationVerdict invokeSignatureAuthorizationHook(
++    const AuthorizationHookConfig & config,
++    BuiltInSignatureDecision builtInDecision,
++    const std::vector<AuthorizationCandidate> & candidates,
++    int64_t evaluationTimeUnixSeconds);
++
++} // namespace nix
+diff --git a/src/libutil/include/nix/util/meson.build b/src/libutil/include/nix/util/meson.build
+index 381c1e6..0aa62a3 100644
+--- a/src/libutil/include/nix/util/meson.build
++++ b/src/libutil/include/nix/util/meson.build
+@@ -15,6 +15,7 @@ headers = [ config_pub_h ] + files(
+   'args.hh',
+   'args/root.hh',
+   'array-from-string-literal.hh',
++  'authorization-caller.hh',
+   'base-n.hh',
+   'base-nix-32.hh',
+   'callback.hh',
+diff --git a/src/libutil/meson.build b/src/libutil/meson.build
+index 3ce3dba..fdc4158 100644
+--- a/src/libutil/meson.build
++++ b/src/libutil/meson.build
+@@ -133,6 +133,7 @@ endif
+ sources = [ config_priv_h ] + files(
+   'archive.cc',
+   'args.cc',
++  'authorization-caller.cc',
+   'base-n.cc',
+   'base-nix-32.cc',
+   'canon-path.cc',
+-- 
+2.54.0
+

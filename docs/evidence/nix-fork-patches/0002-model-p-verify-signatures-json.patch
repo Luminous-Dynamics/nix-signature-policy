@@ -1,0 +1,211 @@
+From 8858bef719ccf8fb9740e11400e4766d4964303b Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 04:04:32 +0200
+Subject: [PATCH] Add 'nix store verify-signatures-json' (Model P's Nix-side
+ half)
+
+Third slice of the admission-boundary experiment for nix-signature-policy
+(see /srv/luminous-dynamics/nix-signature-policy) -- "Model P": Nix
+verifies signatures itself (it already can, both algorithms) and emits
+canonical observations; a pure external evaluator turns them into a
+policy result, composed with Nix's own built-in decision.
+
+New read-only command, no admission-path changes: for each requested
+store path, calls the existing checkSignaturesDetailed() and serializes
+its VerifiedSignature observations as JSON in exactly the shape
+nix-signature-policy's SignatureCandidate expects (key_name, algorithm,
+signature_id, verification) -- algorithm strings come from
+keyTypeProtocolName(), landed in the prior commit on this branch and
+already confirmed to match nix-signature-policy's AlgorithmId strings.
+Content-addressed paths report an empty candidate list, matching
+checkSignatures()'s own unconditional CA short-circuit.
+
+Real end-to-end proof, not just compiled: built a trivial input-addressed
+derivation in a scratch store, signed it with a real generated Ed25519
+key, ran this command to get real O, spliced that real output into a
+hand-built AuthorizationRequest, and fed it to the existing, completely
+unmodified nix-signature-authorize binary in conjunctive mode. Result:
+decision=accept, built_in_decision=accept (independently cross-checked
+against `nix store verify` succeeding on the same path/key), policy
+decision=accept via the "required" clause. First time in this project
+that Nix has actually produced O, rather than the Rust side
+re-verifying independently and using `nix store verify` only as a side
+confirmation.
+
+Fixed one real bug found while writing this: MixJSON's `bool json`
+member shadows `using nlohmann::json;` inside a class method that
+inherits it, breaking the initial version's local `json result = ...`
+declarations. Switched to MixPrintJSON (JSON output here is never
+optional, so the extra --json/--no-json flag toggle wasn't wanted
+anyway), which has no such member.
+
+Uses StorePathsCommand + MixPrintJSON, following existing precedent
+(CmdPathInfo, CmdVerify) rather than inventing a new command-registration
+pattern. Self-registers via registerCommand2 like every other command --
+no central command-list file to edit.
+---
+ src/nix/meson.build               |  1 +
+ src/nix/verify-signatures-json.cc | 72 +++++++++++++++++++++++++++++++
+ src/nix/verify-signatures-json.md | 59 +++++++++++++++++++++++++
+ 3 files changed, 132 insertions(+)
+ create mode 100644 src/nix/verify-signatures-json.cc
+ create mode 100644 src/nix/verify-signatures-json.md
+
+diff --git a/src/nix/meson.build b/src/nix/meson.build
+index b7ddcc8..be3dceb 100644
+--- a/src/nix/meson.build
++++ b/src/nix/meson.build
+@@ -126,6 +126,7 @@ nix_sources = [ config_priv_h ] + files(
+   'store-repair.cc',
+   'store.cc',
+   'upgrade-nix.cc',
++  'verify-signatures-json.cc',
+   'verify.cc',
+   'why-depends.cc',
+ )
+diff --git a/src/nix/verify-signatures-json.cc b/src/nix/verify-signatures-json.cc
+new file mode 100644
+index 0000000..f269caf
+--- /dev/null
++++ b/src/nix/verify-signatures-json.cc
+@@ -0,0 +1,72 @@
++#include "nix/cmd/command.hh"
++#include "nix/main/shared.hh"
++#include "nix/main/common-args.hh"
++#include "nix/store/store-api.hh"
++#include "nix/store/keys.hh"
++#include "nix/util/signature/local-keys.hh"
++
++#include <nlohmann/json.hpp>
++
++using namespace nix;
++using nlohmann::json;
++
++/**
++ * Serialize one positively verified signature observation in the wire
++ * shape `nix-signature-policy`'s `SignatureCandidate` (an already-
++ * verified, representation-neutral policy input) expects: `key_name`,
++ * `algorithm` (frozen protocol string, never the `KeyType` enum's raw
++ * ordinal), `signature_id`, and `verification`. Every entry emitted here
++ * is `"valid"` by construction -- `checkSignaturesDetailed()` only
++ * returns positively verified observations in the first place, so there
++ * is no "invalid" or "malformed" case to represent from this source.
++ */
++static json verifiedSignatureToJSON(const ValidPathInfo::VerifiedSignature & sig)
++{
++    return json::object({
++        {"key_name", sig.keyName},
++        {"algorithm", std::string(keyTypeProtocolName(sig.keyType))},
++        {"signature_id", sig.signatureId},
++        {"verification", "valid"},
++    });
++}
++
++struct CmdVerifySignaturesJson : StorePathsCommand, MixPrintJSON
++{
++    std::string description() override
++    {
++        return "emit Nix's own verified-signature observations for store paths as JSON";
++    }
++
++    std::string doc() override
++    {
++        return
++#include "verify-signatures-json.md"
++            ;
++    }
++
++    void run(ref<Store> store, StorePaths && storePaths) override
++    {
++        auto publicKeys = getDefaultPublicKeys();
++
++        json result = json::array();
++
++        for (auto & storePath : storePaths) {
++            auto info = store->queryPathInfo(storePath);
++            auto checkResult = info->checkSignaturesDetailed(*store, publicKeys);
++
++            json candidates = json::array();
++            for (auto & sig : checkResult.verified)
++                candidates.push_back(verifiedSignatureToJSON(sig));
++
++            result.push_back(json::object({
++                {"store_path", store->printStorePath(info->path)},
++                {"content_addressed", info->isContentAddressed(*store)},
++                {"candidates", candidates},
++            }));
++        }
++
++        printJSON(result);
++    }
++};
++
++static auto rCmdVerifySignaturesJson = registerCommand2<CmdVerifySignaturesJson>({"store", "verify-signatures-json"});
+diff --git a/src/nix/verify-signatures-json.md b/src/nix/verify-signatures-json.md
+new file mode 100644
+index 0000000..b15f41b
+--- /dev/null
++++ b/src/nix/verify-signatures-json.md
+@@ -0,0 +1,59 @@
++R""(
++
++# Examples
++
++* Emit verified-signature observations for a store path as JSON:
++
++  ```console
++  # nix store verify-signatures-json /nix/store/10l19qifk7hjjq47px8m2prqk1gv4isy-hello-2.10
++  ```
++
++# Description
++
++This command is part of an admission-boundary architecture comparison
++(see `nix-signature-policy`'s `docs/CANDIDATE_ARCHITECTURES.md`), not a
++general-purpose verification tool -- for that, see [`nix store
++verify`](./nix3-store-verify.md).
++
++For each given store path, it verifies every signature exactly once
++(reusing the same code path `nix store verify`'s trust decision is built
++on) and emits, as JSON, only the signatures that positively verified:
++which key name and which cryptographic algorithm verified them. It does
++not decide whether that evidence is *sufficient* to admit the path --
++that is a separate policy question, deliberately left to a consumer of
++this command's output, matching this experiment's "Nix produces O,
++an external evaluator returns P" architecture (**Model P**).
++
++Content-addressed store paths are reported with `content_addressed:
++true` and an empty `candidates` list -- Nix's own signature check is
++unconditionally skipped for such paths (see
++`ValidPathInfo::checkSignatures`), so there is no meaningful per-signature
++observation to report for them from this source.
++
++# Output format
++
++A JSON array with one object per requested store path:
++
++```json
++[
++  {
++    "store_path": "/nix/store/...-hello-2.10",
++    "content_addressed": false,
++    "candidates": [
++      {
++        "key_name": "cache.example-1",
++        "algorithm": "ed25519",
++        "signature_id": "<sha256 of the raw signature bytes, hex>",
++        "verification": "valid"
++      }
++    ]
++  }
++]
++```
++
++Each `candidates` entry uses the exact field names and `algorithm`
++strings `nix-signature-policy`'s `SignatureCandidate` type expects, so
++this command's output can be fed directly to an external policy
++evaluator without an intermediate translation step.
++
++)""
+-- 
+2.54.0
+

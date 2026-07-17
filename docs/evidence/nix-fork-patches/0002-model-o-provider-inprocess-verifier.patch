@@ -1,0 +1,582 @@
+From 840d22ea244729221f75f09fd2c0da8751048a17 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 13:30:30 +0200
+Subject: [PATCH] Add Model O-provider (in-process dlopen'd C ABI; Nix owns
+ native policy)
+
+Implements the O-provider stop/go review's GO verdict: a minimal,
+versioned, PKCS#11-inspired (not compliant) verification-only C ABI
+for in-process signature observation providers, grounded in the real
+#14451 thread's xokdvium comment. Reuses Model N's KeyGroup/
+allSignatureGroupsSatisfied native-policy composition, same as
+Model O-process, keeping the marginal cost (456 lines) below both H
+(617) and O-process (500) despite the new in-process-ABI risk
+category.
+
+- signature-provider-abi.h: single versioned vtable, one verify() op
+- signature-inprocess-provider.{hh,cc}: dlopen/dlsym wiring, cached
+  for the process lifetime, never dlclosed
+- local-store.hh/.cc: signature-observation-provider-{library,mode,
+  key-groups} settings; pathInfoIsUntrusted only asks the provider
+  about signatures a configured group actually requires, so a
+  provider need not support every algorithm Nix's native check does
+
+617/617 libstore-tests + 707/707 libutil-tests pass (no regressions).
+Real E2E, 6/6 scenarios (measurement/run-oprovider-e2e.sh): legacy
+never loads the provider; conjunctive admits on a satisfied group;
+conjunctive refuses on an unsatisfiable group; an ABI-version
+mismatch is a hard load-time error; a crashing provider segfaults
+Nix's own process (exit 139, demonstrated not just asserted -- the
+model's defining trade-off); an algorithm the provider can't
+evaluate is a hard NIX_SIG_ERROR failure, never silently 'invalid'.
+---
+ src/libstore/include/nix/store/local-store.hh |  72 +++++++++++
+ src/libstore/local-store.cc                   | 110 +++++++++++++++-
+ src/libutil/include/nix/util/meson.build      |   2 +
+ .../nix/util/signature-inprocess-provider.hh  |  56 +++++++++
+ .../include/nix/util/signature-provider-abi.h |  92 ++++++++++++++
+ src/libutil/meson.build                       |   8 ++
+ src/libutil/signature-inprocess-provider.cc   | 117 ++++++++++++++++++
+ 7 files changed, 456 insertions(+), 1 deletion(-)
+ create mode 100644 src/libutil/include/nix/util/signature-inprocess-provider.hh
+ create mode 100644 src/libutil/include/nix/util/signature-provider-abi.h
+ create mode 100644 src/libutil/signature-inprocess-provider.cc
+
+diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
+index fde17c3..c62b19e 100644
+--- a/src/libstore/include/nix/store/local-store.hh
++++ b/src/libstore/include/nix/store/local-store.hh
+@@ -155,6 +155,78 @@ public:
+         true,
+         Xp::ConfigurableSignatureAuthorization};
+ 
++    Setting<std::string> signatureObservationProviderLibrary{
++        this,
++        "",
++        "signature-observation-provider-library",
++        R"(
++          Optional. Absolute path to an in-process signature observation
++          provider: a shared library implementing the small, versioned C
++          ABI in `signature-provider-abi.h` (Model O-provider in the
++          authorization-boundary-architecture comparison). The path must
++          be absolute; no `PATH` lookup is performed.
++
++          Unlike `signature-authorization-hook`, this library is loaded
++          with `dlopen` into Nix's own process and never unloaded. It
++          only reports whether a signature verifies -- it cannot itself
++          admit or refuse a path; Nix always composes its report with
++          Nix's own signature-group policy (`signature-key-group`,
++          shared with Model N). A crash or memory-safety bug in this
++          library crashes Nix's own process -- this is a deliberate,
++          documented trade-off of this model, not an oversight.
++
++          This option is only settable in the global `nix.conf`, or on
++          the command line by trusted users.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<std::string> signatureObservationProviderMode{
++        this,
++        "legacy",
++        "signature-observation-provider-mode",
++        R"(
++          How the result of `signature-observation-provider-library` is
++          combined with Nix's own trusted-signature check. One of:
++
++          - `legacy`: the provider, if configured, is not consulted.
++            Admission is exactly Nix's existing trusted-signature
++            behavior.
++
++          - `conjunctive`: a store path is admitted only if Nix's own
++            trusted-signature check accepts it *and* the resulting
++            verified-signature observations satisfy every group in
++            `signature-key-group`. The provider can only add a
++            requirement; a provider that is unset, fails to load, or
++            reports an error is treated as a refusal, never a silent
++            acceptance. Content-addressed paths, which have no
++            meaningful signature policy, are refused under this mode
++            rather than silently admitted.
++
++          Any other value is a configuration error.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<Strings> signatureObservationProviderKeyGroups{
++        this,
++        {},
++        "signature-observation-provider-key-groups",
++        R"(
++          Zero or more required signature groups, each in the form
++          `<group-name>:<key-name>[,<key-name>...]`. Under
++          `signature-observation-provider-mode = conjunctive`, a path is
++          admitted only if, for every listed group, at least one of that
++          group's key names produced a signature the provider verified
++          as valid. Shared format and evaluation with Model N's
++          `signature-key-group`.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
+     Setting<bool> readOnly{
+         this,
+         false,
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 8dcef12..435135f 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -18,6 +18,9 @@
+ #include "nix/util/users.hh"
+ #include "nix/store/store-registration.hh"
+ #include "nix/util/provenance.hh"
++#include "nix/store/signature-groups.hh"
++#include "nix/util/signature-inprocess-provider.hh"
++#include "nix/util/signature/local-keys.hh"
+ 
+ #include <algorithm>
+ #include <cstring>
+@@ -998,9 +1001,114 @@ const PublicKeys & LocalStore::getPublicKeys()
+     return *state->publicKeys;
+ }
+ 
++namespace {
++
++/**
++ * Parse `<group-name>:<key-name>[,<key-name>...]` entries into
++ * `KeyGroup`s. Throws (not a silent skip) on a malformed entry, so a
++ * typo in the setting is a hard configuration error, not a silently
++ * weaker policy.
++ */
++std::vector<KeyGroup> parseSignatureObservationKeyGroups(const Strings & entries)
++{
++    std::vector<KeyGroup> groups;
++    for (auto & entry : entries) {
++        auto colon = entry.find(':');
++        if (colon == std::string::npos || colon == 0 || colon == entry.size() - 1)
++            throw Error(
++                "invalid signature-observation-provider-key-groups entry '%s' "
++                "(expected '<group-name>:<key-name>[,<key-name>...]')",
++                entry);
++        KeyGroup group{.name = entry.substr(0, colon), .requiredKeyNames = {}};
++        std::string rest = entry.substr(colon + 1);
++        size_t pos = 0;
++        while (pos < rest.size()) {
++            auto comma = rest.find(',', pos);
++            auto keyName = rest.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
++            if (keyName.empty())
++                throw Error("invalid signature-observation-provider-key-groups entry '%s' (empty key name)", entry);
++            group.requiredKeyNames.push_back(keyName);
++            if (comma == std::string::npos)
++                break;
++            pos = comma + 1;
++        }
++        groups.push_back(std::move(group));
++    }
++    return groups;
++}
++
++} // namespace
++
+ bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info)
+ {
+-    return config->requireSigs && !info.checkSignatures(*this, getPublicKeys());
++    if (!config->requireSigs)
++        return false;
++
++    auto sigCheck = info.checkSignaturesDetailed(*this, getPublicKeys());
++    bool nativeTrusted = sigCheck.validCount != 0;
++
++    auto mode = config->signatureObservationProviderMode.get();
++    if (mode == "legacy")
++        return !nativeTrusted;
++    if (mode != "conjunctive")
++        throw Error(
++            "invalid signature-observation-provider-mode '%s' (must be 'legacy' or 'conjunctive')", mode);
++
++    if (info.isContentAddressed(*this)) {
++        warn(
++            "signature-observation-provider-mode=conjunctive: content-addressed path '%s' has no "
++            "meaningful signature policy; refusing",
++            printStorePath(info.path));
++        return true;
++    }
++
++    if (!nativeTrusted)
++        return true;
++
++    auto providerConfig = InProcessProviderConfig::validate(config->signatureObservationProviderLibrary.get());
++    auto groups = parseSignatureObservationKeyGroups(config->signatureObservationProviderKeyGroups.get());
++
++    /* Only key names actually referenced by a configured group are
++       candidates for the provider at all. This keeps the provider from
++       being asked about signatures no group cares about (a provider
++       need not support every algorithm Nix's native check does -- e.g.
++       the example provider is deliberately Ed25519-only, matching the
++       O-provider stop/go review's narrow scope -- so asking it about an
++       irrelevant algorithm would otherwise turn an unrelated signature
++       entry into a hard failure for no policy reason). */
++    std::set<std::string> requiredKeyNames;
++    for (auto & group : groups)
++        for (auto & name : group.requiredKeyNames)
++            requiredKeyNames.insert(name);
++
++    /* One provider call per raw `Sig:` entry that some group requires,
++       matching the key it claims to be from -- the provider only
++       verifies cryptography, it never sees or decides which keys are
++       eligible; that stays a property of Nix's own `getPublicKeys()`
++       trusted-key registry. */
++    std::vector<ValidPathInfo::VerifiedSignature> observed;
++    auto fp = info.fingerprint(*this);
++    std::vector<uint8_t> message(fp.begin(), fp.end());
++    auto & publicKeys = getPublicKeys();
++    for (auto & sig : info.sigs) {
++        if (!requiredKeyNames.contains(sig.keyName))
++            continue;
++        auto key = publicKeys.find(sig.keyName);
++        if (key == publicKeys.end())
++            continue;
++        auto algorithm = std::string(keyTypeProtocolName(key->second->keyType()));
++        std::vector<uint8_t> keyBytes(key->second->key.begin(), key->second->key.end());
++        std::vector<uint8_t> sigBytes(sig.sig.begin(), sig.sig.end());
++        if (invokeInProcessProvider(providerConfig, algorithm, keyBytes, message, sigBytes)) {
++            observed.push_back(ValidPathInfo::VerifiedSignature{
++                .keyName = sig.keyName,
++                .keyType = key->second->keyType(),
++                .signatureId = hashString(HashAlgorithm::SHA256, sig.sig).to_string(HashFormat::Base16, false),
++            });
++        }
++    }
++
++    return !allSignatureGroupsSatisfied(observed, groups);
+ }
+ 
+ bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
+diff --git a/src/libutil/include/nix/util/meson.build b/src/libutil/include/nix/util/meson.build
+index 381c1e6..c38ccf2 100644
+--- a/src/libutil/include/nix/util/meson.build
++++ b/src/libutil/include/nix/util/meson.build
+@@ -80,6 +80,8 @@ headers = [ config_pub_h ] + files(
+   'sentry.hh',
+   'serialise.hh',
+   'signals.hh',
++  'signature-inprocess-provider.hh',
++  'signature-provider-abi.h',
+   'signature/local-keys.hh',
+   'signature/signer.hh',
+   'socket.hh',
+diff --git a/src/libutil/include/nix/util/signature-inprocess-provider.hh b/src/libutil/include/nix/util/signature-inprocess-provider.hh
+new file mode 100644
+index 0000000..2de48af
+--- /dev/null
++++ b/src/libutil/include/nix/util/signature-inprocess-provider.hh
+@@ -0,0 +1,56 @@
++#pragma once
++///@file
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace nix {
++
++/**
++ * Configuration for an in-process (`dlopen`'d) signature observation
++ * provider -- Model O-provider in the authorization-boundary-architecture
++ * comparison. See `signature-provider-abi.h` for the C ABI this loads,
++ * and the O-provider stop/go review for why this model exists and what
++ * it deliberately does not do.
++ */
++struct InProcessProviderConfig
++{
++    /**
++     * Absolute path to the provider shared library. No `PATH` lookup.
++     */
++    std::string libraryPath;
++
++    static InProcessProviderConfig validate(std::string libraryPath);
++};
++
++/**
++ * Load (if not already loaded) the provider at `config.libraryPath`,
++ * cache the resolved vtable for the remaining lifetime of the process
++ * (never `dlclose`d), and ask it to verify `signatureBytes` over
++ * `message` using `keyBytes` under the named `algorithm`.
++ *
++ * Unlike Model O-process's spawned helper, a crash inside the provider
++ * crashes Nix's own process -- this is the model's defining, deliberate
++ * trade-off (fork/exec/pipe overhead traded for a shared fault domain),
++ * not an oversight. Documented and *demonstrated*, not just asserted,
++ * per the stop/go review's evidence requirement.
++ *
++ * Throws on load failure, missing symbol, or ABI version mismatch --
++ * a misconfigured provider is always a hard error, never a silent
++ * no-op or a silent pass. Also throws if the provider itself reports
++ * `NIX_SIG_ERROR` (it could not evaluate this input at all), which is
++ * distinct from a normal "signature did not verify" result and must
++ * not be conflated with it.
++ *
++ * Returns true iff the provider reports the signature valid for this
++ * key under this algorithm.
++ */
++bool invokeInProcessProvider(
++    const InProcessProviderConfig & config,
++    const std::string & algorithm,
++    const std::vector<uint8_t> & keyBytes,
++    const std::vector<uint8_t> & message,
++    const std::vector<uint8_t> & signatureBytes);
++
++} // namespace nix
+diff --git a/src/libutil/include/nix/util/signature-provider-abi.h b/src/libutil/include/nix/util/signature-provider-abi.h
+new file mode 100644
+index 0000000..f03dc9c
+--- /dev/null
++++ b/src/libutil/include/nix/util/signature-provider-abi.h
+@@ -0,0 +1,92 @@
++/*
++ * A minimal, versioned, PKCS#11-*inspired* (not compliant) verification-
++ * only ABI for in-process Nix signature observation providers.
++ *
++ * Scope: raw cryptographic verification of a single (key, message,
++ * signature) triple, nothing more. Evidence normalization, key/slot/
++ * session management, multi-mechanism negotiation, and policy are all
++ * explicitly out of scope -- see the O-provider stop/go review in the
++ * authorization-boundary-architecture comparison this header was built
++ * for, which grounds this design in a real Nix issue #14451 thread
++ * comment (`xokdvium`, proposing a PKCS#11-shaped module) while
++ * deliberately not claiming PKCS#11 conformance.
++ *
++ * This is a plain C header on purpose: it is the ABI boundary between
++ * Nix (a C++ process) and an independently compiled, independently
++ * authored `dlopen`'d shared library, which may not be C++ at all.
++ */
++
++#ifndef NIX_SIGNATURE_PROVIDER_ABI_H
++#define NIX_SIGNATURE_PROVIDER_ABI_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define NIX_SIGNATURE_PROVIDER_ABI_VERSION 1u
++
++/* Return values for `verify`. */
++#define NIX_SIG_VALID 1
++#define NIX_SIG_INVALID 0
++#define NIX_SIG_ERROR (-1)
++
++typedef struct NixSignatureProviderV1
++{
++    /*
++     * Must equal NIX_SIGNATURE_PROVIDER_ABI_VERSION. The caller checks
++     * this before dereferencing `verify`, so a provider built against a
++     * future, incompatible ABI version fails loudly at load time
++     * instead of being called with a mismatched calling convention.
++     */
++    uint32_t abi_version;
++
++    /*
++     * Verify a single detached signature against a single already-
++     * decoded public key.
++     *
++     * `algorithm` is one of Nix's frozen wire algorithm names
++     * ("ed25519", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87", "ecdsa-p384"),
++     * NUL-terminated. A provider that does not support the given
++     * algorithm must return NIX_SIG_ERROR, not silently treat it as
++     * invalid -- the caller distinguishes "this key/signature pair
++     * does not match" from "this provider cannot evaluate this input
++     * at all", and a `NIX_SIG_ERROR` is a hard failure of the whole
++     * admission decision, never silently downgraded to "not valid".
++     *
++     * `key_bytes`/`message_bytes`/`signature_bytes` are raw
++     * (non-Base64, non-PEM) bytes; the caller owns them and they are
++     * valid only for the duration of this call.
++     *
++     * Returns NIX_SIG_VALID, NIX_SIG_INVALID, or NIX_SIG_ERROR. Must
++     * not throw (this is a C ABI -- a C++ implementation must catch
++     * every exception at this boundary), must not retain any pointer
++     * argument past the call, and must be safe to call repeatedly,
++     * synchronously, from the single thread that loaded the library.
++     */
++    int (*verify)(
++        const char * algorithm,
++        const uint8_t * key_bytes,
++        size_t key_len,
++        const uint8_t * message_bytes,
++        size_t message_len,
++        const uint8_t * signature_bytes,
++        size_t signature_len);
++} NixSignatureProviderV1;
++
++/*
++ * Fixed entry-point symbol every provider shared library must export.
++ * Must return a pointer to a statically allocated `NixSignatureProviderV1`,
++ * valid for the remaining lifetime of the process once the library is
++ * loaded (the caller never `dlclose`s a loaded provider -- see the
++ * lifetime-semantics discussion in the stop/go review).
++ */
++const NixSignatureProviderV1 * nix_signature_provider_v1(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* NIX_SIGNATURE_PROVIDER_ABI_H */
+diff --git a/src/libutil/meson.build b/src/libutil/meson.build
+index 3ce3dba..48aa751 100644
+--- a/src/libutil/meson.build
++++ b/src/libutil/meson.build
+@@ -94,6 +94,13 @@ endif
+ sodium = dependency('libsodium', 'sodium')
+ deps_private += sodium
+ 
++# dlopen/dlsym for the in-process signature observation provider ABI
++# (Model O-provider). On glibc >= 2.34 these are part of libc itself, no
++# separate library needed; `deps_private` requires pkg-config-shaped
++# dependency objects (for `.pc` file generation), which a bare
++# `find_library` result is not, so it is intentionally not added there.
++
++
+ brotli = [
+   dependency('libbrotlicommon'),
+   dependency('libbrotlidec'),
+@@ -170,6 +177,7 @@ sources = [ config_priv_h ] + files(
+   'processes.cc',
+   'provenance.cc',
+   'serialise.cc',
++  'signature-inprocess-provider.cc',
+   'signature/local-keys.cc',
+   'signature/signer.cc',
+   'source-accessor.cc',
+diff --git a/src/libutil/signature-inprocess-provider.cc b/src/libutil/signature-inprocess-provider.cc
+new file mode 100644
+index 0000000..14121c6
+--- /dev/null
++++ b/src/libutil/signature-inprocess-provider.cc
+@@ -0,0 +1,117 @@
++#include "nix/util/signature-inprocess-provider.hh"
++#include "nix/util/signature-provider-abi.h"
++#include "nix/util/error.hh"
++#include "nix/util/sync.hh"
++
++#include <dlfcn.h>
++
++#include <map>
++
++namespace nix {
++
++InProcessProviderConfig InProcessProviderConfig::validate(std::string libraryPath)
++{
++    if (libraryPath.empty())
++        throw Error("signature-observation-provider-library is not set");
++    if (libraryPath[0] != '/')
++        throw Error(
++            "signature-observation-provider-library must be an absolute path, got '%s' (no PATH lookup is performed)",
++            libraryPath);
++    return InProcessProviderConfig{.libraryPath = std::move(libraryPath)};
++}
++
++namespace {
++
++/**
++ * Providers are loaded once and cached for the process's lifetime,
++ * keyed by library path. Never `dlclose`d: matches common real-world
++ * plugin practice avoiding static-destructor/TLS teardown hazards, and
++ * this comparison's short-lived CLI invocations have no long-running-
++ * daemon reason to reclaim the mapping.
++ */
++struct ProviderCache
++{
++    std::map<std::string, const NixSignatureProviderV1 *> loaded;
++};
++
++Sync<ProviderCache> providerCache;
++
++const NixSignatureProviderV1 * loadProvider(const std::string & libraryPath)
++{
++    auto cache(providerCache.lock());
++
++    auto it = cache->loaded.find(libraryPath);
++    if (it != cache->loaded.end())
++        return it->second;
++
++    /* RTLD_NOW: resolve all symbols immediately, so a provider with an
++       unresolvable dependency fails loudly at load time, not on first
++       use. RTLD_LOCAL: don't pollute the global symbol namespace. */
++    void * handle = dlopen(libraryPath.c_str(), RTLD_NOW | RTLD_LOCAL);
++    if (!handle)
++        throw Error("failed to load signature observation provider '%s': %s", libraryPath, dlerror());
++
++    dlerror(); // clear any existing error, per dlsym(3)'s recommended idiom
++    auto * entry = reinterpret_cast<const NixSignatureProviderV1 * (*) (void)>(dlsym(handle, "nix_signature_provider_v1"));
++    const char * symError = dlerror();
++    if (symError)
++        throw Error(
++            "signature observation provider '%s' does not export 'nix_signature_provider_v1': %s",
++            libraryPath,
++            symError);
++
++    const NixSignatureProviderV1 * provider = entry();
++    if (!provider)
++        throw Error("signature observation provider '%s' returned a null vtable", libraryPath);
++
++    if (provider->abi_version != NIX_SIGNATURE_PROVIDER_ABI_VERSION)
++        throw Error(
++            "signature observation provider '%s' declares ABI version %d, Nix expects %d",
++            libraryPath,
++            provider->abi_version,
++            NIX_SIGNATURE_PROVIDER_ABI_VERSION);
++
++    if (!provider->verify)
++        throw Error("signature observation provider '%s' has a null 'verify' function pointer", libraryPath);
++
++    cache->loaded.emplace(libraryPath, provider);
++    return provider;
++}
++
++} // namespace
++
++bool invokeInProcessProvider(
++    const InProcessProviderConfig & config,
++    const std::string & algorithm,
++    const std::vector<uint8_t> & keyBytes,
++    const std::vector<uint8_t> & message,
++    const std::vector<uint8_t> & signatureBytes)
++{
++    const NixSignatureProviderV1 * provider = loadProvider(config.libraryPath);
++
++    /* This is a C ABI call: the provider must not throw, but we do not
++       control its implementation, so treat any propagating C++
++       exception the same as any other in-process fault -- it is not
++       caught here, deliberately, because that is exactly the
++       fault-domain trade-off this model makes and this comparison
++       needs to observe, not paper over. */
++    int result = provider->verify(
++        algorithm.c_str(),
++        keyBytes.data(),
++        keyBytes.size(),
++        message.data(),
++        message.size(),
++        signatureBytes.data(),
++        signatureBytes.size());
++
++    if (result == NIX_SIG_ERROR)
++        throw Error(
++            "signature observation provider '%s' reported an error verifying under algorithm '%s' "
++            "(not a normal signature-invalid result)",
++            config.libraryPath,
++            algorithm);
++
++    return result == NIX_SIG_VALID;
++}
++
++} // namespace nix
+-- 
+2.54.0
+

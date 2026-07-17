@@ -1,0 +1,289 @@
+From 8ad4bbe6aa14a4e305da23f2f24b57a5c180145e Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 00:45:06 +0200
+Subject: [PATCH] Add native grouped-signature policy primitive (Model N)
+
+Second slice of the admission-boundary experiment for nix-signature-policy
+(see /srv/luminous-dynamics/nix-signature-policy) -- the native
+grouped-signature baseline ("Model N" in the empirical comparison: Nix
+verifies signatures and directly enforces groups/thresholds itself, no
+external hook or IPC).
+
+allSignatureGroupsSatisfied(verified, groups): a KeyGroup names a set of
+key identities that must ALL appear among already-verified signature
+observations for the group to be satisfied; the whole policy requires
+every configured group satisfied. Deliberately a pure function over
+ValidPathInfo::VerifiedSignature observations (from
+checkSignaturesDetailed(), landed in the prior commit on this branch),
+never raw signature bytes or a public-key registry -- mirrors
+nix-signature-policy's own core-v1 separation of representation-neutral
+policy from cryptographic verification, and makes this trivially
+unit-testable with hand-built observations, no real keys needed.
+
+Not wired into any admission path yet (pathInfoIsUntrusted/addToStore) --
+this commit is the policy primitive and its test coverage only, matching
+this branch's established staging discipline of no-behavior-change
+commits with an explicit next step. Test coverage includes the exact
+benchmark policy this comparison is built around: built-in trust AND
+both an Ed25519 and ML-DSA-65 signature from one configured publisher,
+expressed as two distinct per-algorithm key names in one group -- never
+one name trusted under both algorithms, per this project's own verified
+same-name-collision finding.
+
+Built and tested in an isolated working-tree copy after discovering a
+second, concurrently active session already iterating on this same
+branch's hook-invocation machinery (authorization-caller.{cc,hh},
+local-store.cc wiring) in the original checkout -- this commit
+deliberately touches none of those files.
+---
+ src/libstore-tests/meson.build                |   1 +
+ src/libstore-tests/signature-groups.cc        | 102 ++++++++++++++++++
+ src/libstore/include/nix/store/meson.build    |   1 +
+ .../include/nix/store/signature-groups.hh     |  59 ++++++++++
+ src/libstore/meson.build                      |   1 +
+ src/libstore/signature-groups.cc              |  22 ++++
+ 6 files changed, 186 insertions(+)
+ create mode 100644 src/libstore-tests/signature-groups.cc
+ create mode 100644 src/libstore/include/nix/store/signature-groups.hh
+ create mode 100644 src/libstore/signature-groups.cc
+
+diff --git a/src/libstore-tests/meson.build b/src/libstore-tests/meson.build
+index 2d12b14..f374134 100644
+--- a/src/libstore-tests/meson.build
++++ b/src/libstore-tests/meson.build
+@@ -81,6 +81,7 @@ sources = files(
+   's3-binary-cache-store.cc',
+   's3-url.cc',
+   'serve-protocol.cc',
++  'signature-groups.cc',
+   'ssh-store.cc',
+   'store-reference.cc',
+   'uds-remote-store.cc',
+diff --git a/src/libstore-tests/signature-groups.cc b/src/libstore-tests/signature-groups.cc
+new file mode 100644
+index 0000000..40a3508
+--- /dev/null
++++ b/src/libstore-tests/signature-groups.cc
+@@ -0,0 +1,102 @@
++#include "nix/store/signature-groups.hh"
++
++#include <gtest/gtest.h>
++
++namespace nix {
++
++static ValidPathInfo::VerifiedSignature
++verifiedSig(std::string keyName, KeyType keyType = KeyType::Ed25519, std::string signatureId = "sig")
++{
++    return ValidPathInfo::VerifiedSignature{
++        .keyName = std::move(keyName),
++        .keyType = keyType,
++        .signatureId = std::move(signatureId),
++    };
++}
++
++TEST(allSignatureGroupsSatisfied, emptyGroupsIsVacuouslySatisfied)
++{
++    EXPECT_TRUE(allSignatureGroupsSatisfied({}, {}));
++    EXPECT_TRUE(allSignatureGroupsSatisfied({verifiedSig("k1")}, {}));
++}
++
++TEST(allSignatureGroupsSatisfied, singleGroupSingleKeySatisfiedWhenPresent)
++{
++    std::vector<KeyGroup> groups{KeyGroup{.name = "publisher", .requiredKeyNames = {"k1"}}};
++    EXPECT_TRUE(allSignatureGroupsSatisfied({verifiedSig("k1")}, groups));
++}
++
++TEST(allSignatureGroupsSatisfied, singleGroupSingleKeyRefusedWhenAbsent)
++{
++    std::vector<KeyGroup> groups{KeyGroup{.name = "publisher", .requiredKeyNames = {"k1"}}};
++    EXPECT_FALSE(allSignatureGroupsSatisfied({}, groups));
++    EXPECT_FALSE(allSignatureGroupsSatisfied({verifiedSig("other-key")}, groups));
++}
++
++// The exact benchmark policy this admission-boundary comparison is built
++// around: built-in trust succeeds AND both an Ed25519 and an ML-DSA-65
++// signature from the configured publisher are valid. "Configured
++// publisher" is two distinct per-algorithm key names bound into one
++// group -- never one key name trusted under both algorithms, matching
++// nix-signature-policy's own verified finding that real Nix cannot
++// safely dual-trust a single key name across algorithms.
++TEST(allSignatureGroupsSatisfied, hybridPublisherGroupRequiresBothAlgorithms)
++{
++    std::vector<KeyGroup> groups{
++        KeyGroup{.name = "acme-release", .requiredKeyNames = {"acme-release-ed25519-1", "acme-release-mldsa65-1"}}};
++
++    // Only the classical half: refused.
++    EXPECT_FALSE(allSignatureGroupsSatisfied(
++        {verifiedSig("acme-release-ed25519-1", KeyType::Ed25519)},
++        groups));
++
++    // Only the PQ half: refused.
++    EXPECT_FALSE(allSignatureGroupsSatisfied(
++        {verifiedSig("acme-release-mldsa65-1", KeyType::MLDSA65)},
++        groups));
++
++    // Both halves, plus an unrelated third-party signature: satisfied.
++    // The third-party signature proves group satisfaction doesn't
++    // require *exclusively* the group's own keys to be present, only
++    // that the group's own required keys are all covered.
++    EXPECT_TRUE(allSignatureGroupsSatisfied(
++        {
++            verifiedSig("acme-release-ed25519-1", KeyType::Ed25519),
++            verifiedSig("acme-release-mldsa65-1", KeyType::MLDSA65),
++            verifiedSig("unrelated-third-party-key", KeyType::Ed25519),
++        },
++        groups));
++}
++
++TEST(allSignatureGroupsSatisfied, multipleGroupsAllMustBeSatisfied)
++{
++    std::vector<KeyGroup> groups{
++        KeyGroup{.name = "publisher-a", .requiredKeyNames = {"a1"}},
++        KeyGroup{.name = "publisher-b", .requiredKeyNames = {"b1"}},
++    };
++
++    // Only one group's key present: whole policy refused.
++    EXPECT_FALSE(allSignatureGroupsSatisfied({verifiedSig("a1")}, groups));
++
++    // Both groups' keys present: satisfied.
++    EXPECT_TRUE(allSignatureGroupsSatisfied({verifiedSig("a1"), verifiedSig("b1")}, groups));
++}
++
++TEST(allSignatureGroupsSatisfied, sameNameDifferentAlgorithmDoesNotCollapseRequirement)
++{
++    // Two distinct required key *names* per the established pattern --
++    // a single key name is never trusted across two algorithms. This
++    // test pins that the group is keyed purely on `keyName`, matching
++    // that design: a verified signature under one key name satisfies a
++    // requirement for that exact key name regardless of which algorithm
++    // verified it, but two different required names are never conflated
++    // into one.
++    std::vector<KeyGroup> groups{
++        KeyGroup{.name = "publisher", .requiredKeyNames = {"k-ed25519", "k-mldsa65"}}};
++
++    EXPECT_FALSE(allSignatureGroupsSatisfied({verifiedSig("k-ed25519", KeyType::Ed25519)}, groups));
++    EXPECT_TRUE(allSignatureGroupsSatisfied(
++        {verifiedSig("k-ed25519", KeyType::Ed25519), verifiedSig("k-mldsa65", KeyType::MLDSA65)}, groups));
++}
++
++} // namespace nix
+diff --git a/src/libstore/include/nix/store/meson.build b/src/libstore/include/nix/store/meson.build
+index 9900e64..e0f48ab 100644
+--- a/src/libstore/include/nix/store/meson.build
++++ b/src/libstore/include/nix/store/meson.build
+@@ -85,6 +85,7 @@ headers = [ config_pub_h ] + files(
+   'serve-protocol-connection.hh',
+   'serve-protocol-impl.hh',
+   'serve-protocol.hh',
++  'signature-groups.hh',
+   'sqlite.hh',
+   'ssh-store.hh',
+   'ssh.hh',
+diff --git a/src/libstore/include/nix/store/signature-groups.hh b/src/libstore/include/nix/store/signature-groups.hh
+new file mode 100644
+index 0000000..f4dea11
+--- /dev/null
++++ b/src/libstore/include/nix/store/signature-groups.hh
+@@ -0,0 +1,59 @@
++#pragma once
++///@file
++
++#include "nix/store/path-info.hh"
++
++#include <string>
++#include <vector>
++
++namespace nix {
++
++/**
++ * A named requirement: every one of `requiredKeyNames` must have
++ * positively verified for this group to be satisfied. Distinct from
++ * Nix's existing any-valid `trusted-public-keys` model, which requires
++ * only one valid signature from any configured key.
++ *
++ * Deliberately does not name an algorithm directly -- which algorithm a
++ * given key name means is determined once, by the trusted key registry
++ * that produced the `VerifiedSignature`s this group is checked against,
++ * not re-declared here. A `KeyGroup` only expresses "these key
++ * identities, together."
++ */
++struct KeyGroup
++{
++    std::string name;
++    std::vector<std::string> requiredKeyNames;
++
++    bool operator==(const KeyGroup &) const = default;
++};
++
++/**
++ * Native grouped-signature admission policy: every configured group
++ * must be satisfied, where a group is satisfied when every one of its
++ * `requiredKeyNames` appears among `verified`.
++ *
++ * This is a pure function over already-verified observations -- it
++ * never touches raw signature bytes, a store, or a public-key registry
++ * itself. `ValidPathInfo::checkSignaturesDetailed()` (or an equivalent
++ * per-signature verification pass) is expected to have already produced
++ * `verified` before this is called. That separation mirrors the
++ * `nix-signature-policy` project's own `core-v1`: representation-neutral
++ * policy evaluation, decoupled from cryptographic verification, so this
++ * function is trivially unit-testable without any real key material.
++ *
++ * An empty `groups` list is vacuously satisfied (`true`) -- matches
++ * today's behavior when no groups are configured, so this function is
++ * safe to call unconditionally once wired into an admission path,
++ * without itself changing behavior for a caller that configures no
++ * groups.
++ *
++ * Does not by itself decide store-path admission -- a caller composes
++ * this result with Nix's own built-in trust decision under whatever
++ * enforcement mode it chooses, the same B/P composition principle used
++ * throughout this admission-boundary experiment.
++ */
++bool allSignatureGroupsSatisfied(
++    const std::vector<ValidPathInfo::VerifiedSignature> & verified, const std::vector<KeyGroup> & groups);
++
++} // namespace nix
+diff --git a/src/libstore/meson.build b/src/libstore/meson.build
+index 47c7d20..0dc6269 100644
+--- a/src/libstore/meson.build
++++ b/src/libstore/meson.build
+@@ -363,6 +363,7 @@ sources = files(
+   's3-url.cc',
+   'serve-protocol-connection.cc',
+   'serve-protocol.cc',
++  'signature-groups.cc',
+   'sqlite.cc',
+   'ssh-store.cc',
+   'ssh.cc',
+diff --git a/src/libstore/signature-groups.cc b/src/libstore/signature-groups.cc
+new file mode 100644
+index 0000000..3210414
+--- /dev/null
++++ b/src/libstore/signature-groups.cc
+@@ -0,0 +1,22 @@
++#include "nix/store/signature-groups.hh"
++
++#include <algorithm>
++
++namespace nix {
++
++bool allSignatureGroupsSatisfied(
++    const std::vector<ValidPathInfo::VerifiedSignature> & verified, const std::vector<KeyGroup> & groups)
++{
++    auto hasKey = [&](const std::string & keyName) {
++        return std::any_of(verified.begin(), verified.end(), [&](const auto & v) { return v.keyName == keyName; });
++    };
++
++    return std::all_of(groups.begin(), groups.end(), [&](const KeyGroup & group) {
++        return std::all_of(
++            group.requiredKeyNames.begin(), group.requiredKeyNames.end(), [&](const std::string & keyName) {
++                return hasKey(keyName);
++            });
++    });
++}
++
++} // namespace nix
+-- 
+2.54.0
+

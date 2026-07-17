@@ -1,0 +1,411 @@
+From 11a967a71350fc877647c489c71a05a990d09cdb Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Thu, 16 Jul 2026 23:48:27 +0200
+Subject: [PATCH] Add per-signature verified-observation API and experimental
+ admission-hook settings
+
+First slice of the admission-boundary experiment for nix-signature-policy
+(see /srv/luminous-dynamics/nix-signature-policy). Adds:
+
+- ValidPathInfo::checkSignaturesDetailed(): computes checkSignatures()'s
+  existing valid-count AND the per-signature verified identity/algorithm
+  observations an external authorization boundary needs, in one
+  verification pass (not two independent passes -- avoids duplicated
+  ML-DSA verification work and B/O drift). checkSignatures() is now a
+  thin wrapper delegating to it; its behavior, including the
+  content-addressed short-circuit, is unchanged. Each VerifiedSignature
+  carries a stable signatureId (SHA-256 of the raw signature bytes) so
+  exact-duplicate signatures share an ID without exposing raw bytes to
+  callers that don't need them. Output is sorted by (keyName, keyType)
+  for deterministic serialization. Documented explicitly as a bounded
+  set of *positively verified* observations, not a complete per-signature
+  pass/fail map -- unknown keys, invalid signatures, and malformed
+  entries are omitted by design, not merely unimplemented.
+- PublicKey::keyType() is pure virtual (not a throwing default), so a
+  future or overlooked PublicKey subclass fails to build rather than
+  verifying a signature and then throwing when asked what algorithm did
+  the verifying. Confirmed via grep that nothing constructs a bare
+  PublicKey. Implemented on Ed25519PublicKey and OpenSSLPublicKey
+  (ML-DSA/ECDSA-P384).
+- keyTypeProtocolName(KeyType): frozen wire strings (ed25519,
+  ml-dsa-44/65/87, ecdsa-p384) matching the existing internal
+  keyTypeMap and nix-signature-policy's own AlgorithmId strings --
+  never serializes the enum's raw ordinal.
+- Three new LocalStoreConfig settings gated behind a new experimental
+  feature (Xp::ConfigurableSignatureAuthorization, off by default):
+  signature-authorization-hook, signature-authorization-mode
+  (legacy|conjunctive), signature-authorization-timeout-ms.
+
+No admission behavior changes yet -- the settings are not consulted by
+pathInfoIsUntrusted/addToStore yet (next step). Unset by default and
+gated behind an off-by-default experimental feature, so this commit
+alone changes nothing for any existing user.
+---
+ src/libstore/include/nix/store/local-store.hh | 55 +++++++++++++++++
+ src/libstore/include/nix/store/path-info.hh   | 61 +++++++++++++++++++
+ src/libstore/path-info.cc                     | 45 +++++++++++---
+ src/libutil/experimental-features.cc          | 16 ++++-
+ .../include/nix/util/experimental-features.hh |  1 +
+ .../include/nix/util/signature/local-keys.hh  | 20 ++++++
+ src/libutil/signature/local-keys.cc           | 30 +++++++++
+ 7 files changed, 219 insertions(+), 9 deletions(-)
+
+diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
+index 73229e2..fde17c3 100644
+--- a/src/libstore/include/nix/store/local-store.hh
++++ b/src/libstore/include/nix/store/local-store.hh
+@@ -100,6 +100,61 @@ public:
+         "require-sigs",
+         "Whether store paths copied into this store should have a trusted signature."};
+ 
++    Setting<std::string> signatureAuthorizationHook{
++        this,
++        "",
++        "signature-authorization-hook",
++        R"(
++          Optional. Absolute path to an external program consulted during
++          store-path admission, in addition to (never instead of) the
++          ordinary `trusted-public-keys` signature check.
++
++          The path must be absolute; no `PATH` lookup is performed. When
++          empty (the default), no external program is consulted and
++          admission behaves exactly as it does without this option
++          (`legacy` mode).
++
++          This option is only settable in the global `nix.conf`, or on the
++          command line by trusted users.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<std::string> signatureAuthorizationMode{
++        this,
++        "legacy",
++        "signature-authorization-mode",
++        R"(
++          How the result of `signature-authorization-hook` is combined
++          with Nix's own trusted-signature check. One of:
++
++          - `legacy`: the hook, if configured, is not consulted. Admission
++            is exactly Nix's existing trusted-signature behavior.
++
++          - `conjunctive`: a store path is admitted only if *both* Nix's
++            own trusted-signature check *and* the hook accept it. The
++            hook can only add a requirement; it can never admit a path
++            Nix's own check refuses, and a hook that is unset, times out,
++            crashes, or returns a malformed response is treated as a
++            refusal, never a silent acceptance.
++
++          Any other value is a configuration error.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<unsigned int> signatureAuthorizationTimeoutMs{
++        this,
++        2000,
++        "signature-authorization-timeout-ms",
++        "Milliseconds to wait for `signature-authorization-hook` before treating the invocation as failed "
++        "(and, in `conjunctive` mode, refusing the path).",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
+     Setting<bool> readOnly{
+         this,
+         false,
+diff --git a/src/libstore/include/nix/store/path-info.hh b/src/libstore/include/nix/store/path-info.hh
+index 98f9ebe..f9dc6cc 100644
+--- a/src/libstore/include/nix/store/path-info.hh
++++ b/src/libstore/include/nix/store/path-info.hh
+@@ -8,6 +8,7 @@
+ 
+ #include <string>
+ #include <optional>
++#include <vector>
+ 
+ namespace nix {
+ 
+@@ -209,6 +210,66 @@ struct ValidPathInfo : virtual UnkeyedValidPathInfo
+      */
+     bool checkSignature(const StoreDirConfig & store, const PublicKeys & publicKeys, const Signature & sig) const;
+ 
++    /**
++     * A single positively verified signature observation: the key
++     * identity that produced it and the algorithm used to verify it.
++     * Distinct from `Signature` (a claimed key name plus raw signature
++     * bytes, neither of which is trustworthy before verification).
++     *
++     * `signatureId` is a stable, opaque identity for the raw signature
++     * bytes (a content hash) -- exact duplicate signatures share it;
++     * distinct signatures, even from the same `keyName`, do not. It
++     * exists so an external policy consumer can distinguish "the same
++     * signature reported twice" from "two different signatures from
++     * one key" without seeing raw cryptographic bytes.
++     */
++    struct VerifiedSignature
++    {
++        std::string keyName;
++        KeyType keyType;
++        std::string signatureId;
++
++        bool operator==(const VerifiedSignature &) const = default;
++    };
++
++    struct SignatureCheckResult
++    {
++        /**
++         * Same value `checkSignatures` returns: the count of valid
++         * signatures, or `maxSigs` for a content-addressed path.
++         */
++        size_t validCount;
++
++        /**
++         * One entry per signature that positively verified, sorted by
++         * `(keyName, keyType)` for deterministic serialization
++         * regardless of `sigs`'s own internal ordering. Empty (not
++         * `maxSigs`-flagged) for a content-addressed path -- see
++         * `validCount` for that signal instead.
++         *
++         * This is a bounded set of positively verified observations,
++         * not a complete per-signature pass/fail map: unknown key
++         * names, known keys with invalid signatures, and malformed
++         * signature entries are omitted by design, not merely
++         * unimplemented. A caller that needs to distinguish "no
++         * evidence was offered" from "evidence was offered and
++         * rejected" cannot do so from this field alone.
++         */
++        std::vector<VerifiedSignature> verified;
++    };
++
++    /**
++     * Verify every signature exactly once and report both the count
++     * `checkSignatures` returns and the detailed per-signature
++     * observations an external authorization boundary needs --
++     * deliberately one verification pass computing both, not two
++     * independent passes that could drift or double the cryptographic
++     * work (ML-DSA verification is not free). `checkSignatures` is a
++     * thin wrapper around this method's `validCount` and its behavior,
++     * including the content-addressed short-circuit, is unchanged.
++     */
++    SignatureCheckResult checkSignaturesDetailed(const StoreDirConfig & store, const PublicKeys & publicKeys) const;
++
+     /**
+      * References as store path basenames, including a self reference if it has one.
+      */
+diff --git a/src/libstore/path-info.cc b/src/libstore/path-info.cc
+index e1803e1..009c463 100644
+--- a/src/libstore/path-info.cc
++++ b/src/libstore/path-info.cc
+@@ -6,6 +6,9 @@
+ #include "nix/util/comparator.hh"
+ #include "nix/util/strings.hh"
+ #include "nix/util/provenance.hh"
++#include "nix/util/hash.hh"
++
++#include <algorithm>
+ 
+ namespace nix {
+ 
+@@ -119,14 +122,7 @@ bool ValidPathInfo::isContentAddressed(const StoreDirConfig & store) const
+ 
+ size_t ValidPathInfo::checkSignatures(const StoreDirConfig & store, const PublicKeys & publicKeys) const
+ {
+-    if (isContentAddressed(store))
+-        return maxSigs;
+-
+-    size_t good = 0;
+-    for (auto & sig : sigs)
+-        if (checkSignature(store, publicKeys, sig))
+-            good++;
+-    return good;
++    return checkSignaturesDetailed(store, publicKeys).validCount;
+ }
+ 
+ bool ValidPathInfo::checkSignature(
+@@ -135,6 +131,39 @@ bool ValidPathInfo::checkSignature(
+     return verifyDetached(fingerprint(store), sig, publicKeys);
+ }
+ 
++ValidPathInfo::SignatureCheckResult
++ValidPathInfo::checkSignaturesDetailed(const StoreDirConfig & store, const PublicKeys & publicKeys) const
++{
++    if (isContentAddressed(store))
++        return {.validCount = maxSigs, .verified = {}};
++
++    SignatureCheckResult result{.validCount = 0, .verified = {}};
++    auto fp = fingerprint(store);
++    for (auto & sig : sigs) {
++        auto key = publicKeys.find(sig.keyName);
++        if (key == publicKeys.end())
++            continue;
++        if (key->second->verifyDetachedAnon(fp, sig)) {
++            result.validCount++;
++            result.verified.push_back(VerifiedSignature{
++                .keyName = sig.keyName,
++                .keyType = key->second->keyType(),
++                .signatureId = hashString(HashAlgorithm::SHA256, sig.sig).to_string(HashFormat::Base16, false),
++            });
++        }
++    }
++
++    // Deterministic order independent of `sigs`'s own internal
++    // ordering, so serializing this result is reproducible.
++    std::sort(result.verified.begin(), result.verified.end(), [](const auto & a, const auto & b) {
++        if (a.keyName != b.keyName)
++            return a.keyName < b.keyName;
++        return keyTypeProtocolName(a.keyType) < keyTypeProtocolName(b.keyType);
++    });
++
++    return result;
++}
++
+ Strings ValidPathInfo::shortRefs() const
+ {
+     Strings refs;
+diff --git a/src/libutil/experimental-features.cc b/src/libutil/experimental-features.cc
+index bcd4cf5..d8a6963 100644
+--- a/src/libutil/experimental-features.cc
++++ b/src/libutil/experimental-features.cc
+@@ -25,7 +25,7 @@ struct ExperimentalFeatureDetails
+  * feature, we either have no issue at all if few features are not added
+  * at the end of the list, or a proper merge conflict if they are.
+  */
+-constexpr size_t numXpFeatures = 1 + static_cast<size_t>(Xp::CNSA);
++constexpr size_t numXpFeatures = 1 + static_cast<size_t>(Xp::ConfigurableSignatureAuthorization);
+ 
+ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails = {{
+     {
+@@ -315,6 +315,20 @@ constexpr std::array<ExperimentalFeatureDetails, numXpFeatures> xpFeatureDetails
+         )",
+         .trackingUrl = "",
+     },
++    {
++        .tag = Xp::ConfigurableSignatureAuthorization,
++        .name = "configurable-signature-authorization",
++        .description = R"(
++            Enable [`signature-authorization-hook`](@docroot@/command-ref/conf-file.md#conf-signature-authorization-hook),
++            an external program consulted during store-path admission in
++            addition to (never instead of) the ordinary `trusted-public-keys`
++            check. Off by default: unset, this changes no admission
++            behavior at all. This is experimental research-prototype
++            plumbing, not a claim that its exact configuration shape is
++            the one a real Nix RFC would settle on.
++        )",
++        .trackingUrl = "",
++    },
+ }};
+ 
+ static_assert(
+diff --git a/src/libutil/include/nix/util/experimental-features.hh b/src/libutil/include/nix/util/experimental-features.hh
+index f2bdece..6c3c641 100644
+--- a/src/libutil/include/nix/util/experimental-features.hh
++++ b/src/libutil/include/nix/util/experimental-features.hh
+@@ -42,6 +42,7 @@ enum struct ExperimentalFeature {
+     WasmDerivations,
+     Provenance,
+     CNSA,
++    ConfigurableSignatureAuthorization,
+ };
+ 
+ extern std::set<std::string> stabilizedFeatures;
+diff --git a/src/libutil/include/nix/util/signature/local-keys.hh b/src/libutil/include/nix/util/signature/local-keys.hh
+index 6d76203..fd61540 100644
+--- a/src/libutil/include/nix/util/signature/local-keys.hh
++++ b/src/libutil/include/nix/util/signature/local-keys.hh
+@@ -4,6 +4,7 @@
+ #include "nix/util/json-impls.hh"
+ 
+ #include <map>
++#include <string_view>
+ 
+ namespace nix {
+ 
+@@ -124,8 +125,27 @@ struct PublicKey : Key
+      * supported.
+      */
+     virtual std::string toPEM() const;
++
++    /**
++     * The cryptographic algorithm this key uses. Lets a caller that
++     * verified a signature (e.g. an external authorization boundary)
++     * report *which* algorithm verified it, not only that some trusted
++     * key did. Pure virtual rather than a throwing default: every
++     * concrete key type must declare its algorithm at compile time, so
++     * a future or overlooked subclass fails to build rather than
++     * successfully verifying a signature and then throwing when asked
++     * what algorithm did the verifying.
++     */
++    virtual KeyType keyType() const = 0;
+ };
+ 
++/**
++ * Frozen wire-format name for a `KeyType`, for protocols that must not
++ * serialize the enum's numeric value (which is not a stable ABI/wire
++ * contract). Matches nix-signature-policy's `AlgorithmId` strings.
++ */
++std::string_view keyTypeProtocolName(KeyType type);
++
+ /**
+  * Map from key names to public keys
+  */
+diff --git a/src/libutil/signature/local-keys.cc b/src/libutil/signature/local-keys.cc
+index 49c8407..4d94ca8 100644
+--- a/src/libutil/signature/local-keys.cc
++++ b/src/libutil/signature/local-keys.cc
+@@ -257,6 +257,11 @@ struct Ed25519PublicKey : PublicKey
+                    (unsigned char *) key.data())
+                == 0;
+     }
++
++    KeyType keyType() const override
++    {
++        return KeyType::Ed25519;
++    }
+ };
+ 
+ struct Ed25519SecretKey : SecretKey
+@@ -346,6 +351,11 @@ struct OpenSSLPublicKey : PublicKey
+         long len = BIO_get_mem_data(bio.get(), &data);
+         return std::string(data, len);
+     }
++
++    KeyType keyType() const override
++    {
++        return type;
++    }
+ };
+ 
+ struct OpenSSLSecretKey : SecretKey
+@@ -555,6 +565,26 @@ std::string PublicKey::toPEM() const
+     throw Error("conversion to PEM is not implemented for this key type");
+ }
+ 
++std::string_view keyTypeProtocolName(KeyType type)
++{
++    // Mirrors keyTypeMap's strings exactly (not derived from it
++    // programmatically, so this stays correct even if that map's
++    // iteration order or internal representation changes).
++    switch (type) {
++    case KeyType::Ed25519:
++        return "ed25519";
++    case KeyType::MLDSA44:
++        return "ml-dsa-44";
++    case KeyType::MLDSA65:
++        return "ml-dsa-65";
++    case KeyType::MLDSA87:
++        return "ml-dsa-87";
++    case KeyType::ECDSAP384:
++        return "ecdsa-p384";
++    }
++    throw Error("no protocol name defined for this key type");
++}
++
+ bool verifyDetached(std::string_view data, const Signature & sig, const PublicKeys & publicKeys)
+ {
+     auto key = publicKeys.find(sig.keyName);
+-- 
+2.54.0
+

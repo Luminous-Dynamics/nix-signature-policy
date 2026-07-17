@@ -1,0 +1,651 @@
+From 187029b409d9feda6ce1935a7d3a09631af38862 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 12:17:37 +0200
+Subject: [PATCH] Add Model O (external verifier returns O; Nix owns native
+ policy)
+
+Fifth model in the admission-boundary architecture comparison for
+nix-signature-policy (see /srv/luminous-dynamics/nix-signature-policy),
+built on its own branch from the shared foundation (11a967a), not on
+top of Model H's commits -- per this comparison's isolation discipline,
+so O-process's own measurements aren't contaminated by H's cumulative
+diff.
+
+The provider is handed *raw, unverified* evidence (the canonical
+fingerprint and literal `Sig:` entries, verbatim) and returns
+*observations* it positively verified -- never a final decision. Nix
+evaluates its own native grouped-signature policy
+(allSignatureGroupsSatisfied, cherry-picked from Model N (8ad4bbe) --
+the two models deliberately share this policy vocabulary, since Model
+O's whole premise is delegating evidence verification, not policy) over
+whatever the provider reports, composed with the ordinary
+trusted-public-keys check.
+
+New settings, distinctly named from Model H's (signature-observation-
+provider vs signature-authorization-hook) so the two models'
+configuration surfaces stay comparably measurable: signature-
+observation-provider, -mode (legacy|conjunctive), -timeout-ms, and
+signature-key-group (repeatable <group>:<key>[,<key>...] entries).
+
+New src/libutil/signature-observation-caller.{hh,cc}: recreated (not
+copied) from Model H's hardened process-invocation pattern -- same
+safety properties (direct execve, no shell/PATH lookup, cleared
+environment, reader threads armed before stdin write, dual process-
+group/direct-pid SIGKILL on timeout, failed-invocation output never
+inspected) -- but a different request/response shape throughout (raw
+evidence out, observations in, never a decision), so O's diff doesn't
+carry H-specific dead code it never calls.
+
+Real end-to-end verification, not just compiled -- reused
+nix-signature-policy's new nix-signature-verify-raw binary (R->O only,
+committed there this same session) as the actual external provider via
+a thin registry-merging wrapper script:
+
+  - Full evidence (both frozen publisher keys), conjunctive mode: admits.
+  - Incomplete evidence (provider's own registry knows only the Ed25519
+    half), conjunctive mode: refuses -- the group requirement correctly
+    isn't satisfied by partial evidence.
+  - Legacy mode with a provider configured: admits, provider never
+    invoked (confirmed via a sentinel file the provider would create if
+    launched).
+  - Crashing provider, conjunctive mode: fails closed.
+
+Found and fixed one real bug while building this: the caller's
+deliberately cleared child environment (no PATH, matching Model H's
+same hardening) broke the first wrapper-script draft, which called
+`python3` by bare name -- the shell inside the child process couldn't
+resolve it. Fixed by using absolute paths throughout the wrapper, a
+concrete illustration of exactly the operational cost "cleared
+environment" carries for anyone deploying a provider that isn't a
+single static binary.
+
+Also independently rediscovered, before checking prior notes, the same
+per-store-setting invocation-mechanism bug already documented in
+H_INDEPENDENT_VERIFICATION.md (`--option` and NIX_CONFIG both produce
+"unknown setting" warnings and silently no-op; only store-URI query
+parameters work) -- and found the further wrinkle that query-string
+values containing `:`/`,` need percent-encoding
+(signature-key-group's `<group>:<key>,<key>` shape hits this directly).
+
+Verified: nix-store-tests 617/617 (Model N's tests included via cherry-
+pick; Model T's are not, since Model T isn't on this branch).
+---
+ src/libstore/include/nix/store/local-store.hh |  88 +++++++
+ src/libstore/local-store.cc                   |  91 ++++++-
+ src/libutil/include/nix/util/meson.build      |   1 +
+ .../nix/util/signature-observation-caller.hh  |  96 ++++++++
+ src/libutil/meson.build                       |   1 +
+ src/libutil/signature-observation-caller.cc   | 224 ++++++++++++++++++
+ 6 files changed, 500 insertions(+), 1 deletion(-)
+ create mode 100644 src/libutil/include/nix/util/signature-observation-caller.hh
+ create mode 100644 src/libutil/signature-observation-caller.cc
+
+diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
+index fde17c3..6c36f40 100644
+--- a/src/libstore/include/nix/store/local-store.hh
++++ b/src/libstore/include/nix/store/local-store.hh
+@@ -155,6 +155,94 @@ public:
+         true,
+         Xp::ConfigurableSignatureAuthorization};
+ 
++    /**
++     * Model O ("external verifier returns O; Nix owns native narrow
++     * policy") from the admission-boundary architecture comparison --
++     * distinct from `signatureAuthorizationHook` (Model H): this
++     * provider is handed *raw, unverified* evidence and returns
++     * *observations*, never a final decision. Nix evaluates its own
++     * grouped-signature policy (`allSignatureGroupsSatisfied`, shared
++     * with Model N) over whatever the provider reports.
++     */
++    Setting<std::string> signatureObservationProvider{
++        this,
++        "",
++        "signature-observation-provider",
++        R"(
++          Optional. Absolute path to an external program that verifies
++          raw, unverified `Sig:` evidence and reports which signatures it
++          positively verified -- never a final admission decision. Nix
++          evaluates its own native grouped-signature policy over the
++          returned observations, composed with the ordinary
++          `trusted-public-keys` check.
++
++          The path must be absolute; no `PATH` lookup is performed. When
++          empty (the default), no external program is consulted.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<std::string> signatureObservationProviderMode{
++        this,
++        "legacy",
++        "signature-observation-provider-mode",
++        R"(
++          How observations from `signature-observation-provider` are
++          combined with Nix's own trusted-signature check and native
++          grouped-signature policy. One of:
++
++          - `legacy`: the provider, if configured, is not consulted.
++
++          - `conjunctive`: a store path is admitted only if *both* Nix's
++            own trusted-signature check *and* the configured
++            `signature-key-group` requirements (evaluated over the
++            provider's reported observations) are satisfied. A provider
++            that is unset, times out, crashes, or returns a malformed
++            response reports zero observations, never a silent
++            acceptance.
++
++          Any other value is a configuration error.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<unsigned int> signatureObservationProviderTimeoutMs{
++        this,
++        2000,
++        "signature-observation-provider-timeout-ms",
++        "Milliseconds to wait for `signature-observation-provider` before treating the invocation as failed.",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    /**
++     * One or more `<group-name>:<key-name>[,<key-name>...]` entries.
++     * Every listed key name must appear among the observation provider's
++     * reported observations for that group to be satisfied; every
++     * configured group must be satisfied for
++     * `signature-observation-provider-mode=conjunctive` to admit a path.
++     * Reuses the same `KeyGroup`/`allSignatureGroupsSatisfied` primitive
++     * Model N's native-only baseline uses -- Model O's whole premise is
++     * delegating *evidence* verification, not policy, so the two models
++     * share exactly this policy vocabulary by design, not by accident.
++     */
++    Setting<Strings> signatureKeyGroups{
++        this,
++        {},
++        "signature-key-group",
++        R"(
++          A grouped-signature requirement for
++          `signature-observation-provider-mode=conjunctive`, in the form
++          `<group-name>:<key-name>[,<key-name>...]`. May be given more
++          than once; every group must be satisfied. See
++          `allSignatureGroupsSatisfied` (shared with Model N).
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
+     Setting<bool> readOnly{
+         this,
+         false,
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 8dcef12..cca6671 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -18,6 +18,8 @@
+ #include "nix/util/users.hh"
+ #include "nix/store/store-registration.hh"
+ #include "nix/util/provenance.hh"
++#include "nix/util/signature-observation-caller.hh"
++#include "nix/store/signature-groups.hh"
+ 
+ #include <algorithm>
+ #include <cstring>
+@@ -998,9 +1000,96 @@ const PublicKeys & LocalStore::getPublicKeys()
+     return *state->publicKeys;
+ }
+ 
++namespace {
++
++/**
++ * Parse `signature-key-group` entries (`<group-name>:<key-name>[,<key-name>...]`)
++ * into `KeyGroup`s for `allSignatureGroupsSatisfied`. A malformed entry
++ * (no `:`) is a configuration error, not silently skipped -- an operator
++ * who mistyped a group is entitled to a hard failure, not a policy that's
++ * quietly easier to satisfy than they intended.
++ */
++std::vector<KeyGroup> parseSignatureKeyGroups(const Strings & entries)
++{
++    std::vector<KeyGroup> groups;
++    for (auto & entry : entries) {
++        auto colon = entry.find(':');
++        if (colon == std::string::npos)
++            throw Error("invalid 'signature-key-group' entry '%s': expected '<group-name>:<key-name>[,<key-name>...]'", entry);
++        KeyGroup group;
++        group.name = entry.substr(0, colon);
++        for (auto & keyName : tokenizeString<Strings>(entry.substr(colon + 1), ","))
++            group.requiredKeyNames.push_back(keyName);
++        groups.push_back(std::move(group));
++    }
++    return groups;
++}
++
++} // namespace
++
+ bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info)
+ {
+-    return config->requireSigs && !info.checkSignatures(*this, getPublicKeys());
++    if (!config->requireSigs)
++        return false;
++
++    auto sigCheck = info.checkSignaturesDetailed(*this, getPublicKeys());
++    bool nativeTrusted = sigCheck.validCount != 0;
++
++    auto mode = config->signatureObservationProviderMode.get();
++
++    if (mode == "legacy")
++        // Never launches the provider, even if one is configured -- same
++        // no-behavior-change guarantee as Model H's legacy mode.
++        return !nativeTrusted;
++
++    if (mode != "conjunctive")
++        throw Error(
++            "invalid 'signature-observation-provider-mode' \"%s\"; must be 'legacy' or 'conjunctive'", mode);
++
++    if (info.isContentAddressed(*this)) {
++        // Same explicit fail-closed CA-path handling as Model H, for the
++        // same reason: conjunctive mode must never be silently
++        // equivalent to legacy for CA paths.
++        warn(
++            "refusing content-addressed path '%s': signature-observation-provider-mode=conjunctive "
++            "does not support content-addressed paths in this experiment",
++            printStorePath(info.path));
++        return true;
++    }
++
++    if (!nativeTrusted)
++        return true;
++
++    auto providerConfig = SignatureObservationProviderConfig::validate(
++        config->signatureObservationProvider.get(), config->signatureObservationProviderTimeoutMs.get());
++
++    std::vector<std::string> rawSignatureEntries;
++    rawSignatureEntries.reserve(info.sigs.size());
++    for (auto & sig : info.sigs)
++        rawSignatureEntries.push_back(sig.to_string());
++
++    auto result = invokeObservationProvider(providerConfig, info.fingerprint(*this), rawSignatureEntries);
++
++    // A failed invocation (crash, timeout, malformed response) carries no
++    // observations, which -- combined with any non-empty configured
++    // group requiring at least one key -- already fails closed via
++    // allSignatureGroupsSatisfied without needing a separate check here.
++    // An explicit check is still clearer than relying on that fact
++    // silently holding for every possible group configuration.
++    if (result.failed)
++        return true;
++
++    std::vector<ValidPathInfo::VerifiedSignature> observed;
++    observed.reserve(result.observations.size());
++    for (auto & o : result.observations)
++        observed.push_back(ValidPathInfo::VerifiedSignature{
++            .keyName = o.keyName,
++            .keyType = o.keyType,
++            .signatureId = o.signatureId,
++        });
++
++    auto groups = parseSignatureKeyGroups(config->signatureKeyGroups.get());
++    return !allSignatureGroupsSatisfied(observed, groups);
+ }
+ 
+ bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
+diff --git a/src/libutil/include/nix/util/meson.build b/src/libutil/include/nix/util/meson.build
+index 381c1e6..23b79f7 100644
+--- a/src/libutil/include/nix/util/meson.build
++++ b/src/libutil/include/nix/util/meson.build
+@@ -80,6 +80,7 @@ headers = [ config_pub_h ] + files(
+   'sentry.hh',
+   'serialise.hh',
+   'signals.hh',
++  'signature-observation-caller.hh',
+   'signature/local-keys.hh',
+   'signature/signer.hh',
+   'socket.hh',
+diff --git a/src/libutil/include/nix/util/signature-observation-caller.hh b/src/libutil/include/nix/util/signature-observation-caller.hh
+new file mode 100644
+index 0000000..fbb5b25
+--- /dev/null
++++ b/src/libutil/include/nix/util/signature-observation-caller.hh
+@@ -0,0 +1,96 @@
++#pragma once
++///@file
++
++#include <chrono>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "nix/util/signature/local-keys.hh"
++
++namespace nix {
++
++/**
++ * One observation returned by an external observation provider: which key
++ * name and algorithm positively verified a signature, and its opaque
++ * signature identity. Mirrors `ValidPathInfo::VerifiedSignature` (this
++ * header has no `libstore` dependency, so it cannot use that type
++ * directly) -- callers convert between the two.
++ *
++ * Unlike Model H's `AuthorizationCandidate` (already-verified evidence
++ * Nix hands *to* the external component), this is evidence the external
++ * component hands *back* -- the provider verified raw, unverified
++ * signatures itself and is reporting what it found. Nix never trusts a
++ * `verification` field the provider might have echoed back; only entries
++ * the provider actually reported are ever constructed here, so their
++ * existence in this vector already means "reported positively verified."
++ */
++struct ObservedSignature
++{
++    std::string keyName;
++    KeyType keyType;
++    std::string signatureId;
++};
++
++/**
++ * The result of consulting an external observation provider.
++ *
++ * `Failure` (missing executable, crash, timeout, malformed/oversized
++ * response, protocol error) carries no observations and is deliberately
++ * not representable as "zero observations found" -- a caller must be able
++ * to distinguish "the provider ran and verified nothing" from "the
++ * provider could not be consulted at all," even though both currently
++ * lead to the same fail-closed native-policy outcome (`observations` is
++ * empty in the crash/malformed-provider case too; policy that requires N>0
++ * observations refuses on empty either way).
++ */
++struct ObservationProviderResult
++{
++    bool failed = false;
++    std::vector<ObservedSignature> observations;
++};
++
++/**
++ * Validated, ready-to-use observation-provider configuration. Constructed
++ * only via `SignatureObservationProviderConfig::validate`.
++ */
++class SignatureObservationProviderConfig
++{
++    SignatureObservationProviderConfig(std::string providerPath, std::chrono::milliseconds timeout);
++
++public:
++    const std::string providerPath;
++    const std::chrono::milliseconds timeout;
++
++    /**
++     * Same preconditions as Model H's `AuthorizationHookConfig::validate`
++     * (absolute path only, nonzero timeout bounded by
++     * `maxReasonableTimeoutMs`) -- recreated here rather than shared
++     * across branches, per this comparison's isolation discipline.
++     */
++    static SignatureObservationProviderConfig validate(std::string_view providerPath, unsigned int timeoutMs);
++};
++
++/**
++ * Invoke the configured external observation provider with raw,
++ * unverified signature evidence (the canonical fingerprint and the raw
++ * `name:base64` `Sig:` entries, verbatim) and return whatever verified
++ * observations it reports. Nix does not send its own trusted-key
++ * registry to the provider -- the provider is expected to own its own
++ * trust source, exactly as `nix-signature-policy`'s `verify_raw_evidence`
++ * is designed to be invoked (the registry is trusted local
++ * configuration, never wire input). Nix's *own* native policy is
++ * evaluated separately, by the caller, over the returned observations.
++ *
++ * Same hardened process-invocation properties as Model H's caller
++ * (recreated independently, not shared code, per this comparison's
++ * branch-isolation discipline): direct execve, no shell, no `PATH`
++ * lookup, cleared environment; reader threads armed before the stdin
++ * write; dual process-group and direct-pid `SIGKILL` on timeout; a
++ * failed invocation's output is never inspected.
++ */
++ObservationProviderResult invokeObservationProvider(
++    const SignatureObservationProviderConfig & config, const std::string & fingerprint,
++    const std::vector<std::string> & rawSignatureEntries);
++
++} // namespace nix
+diff --git a/src/libutil/meson.build b/src/libutil/meson.build
+index 3ce3dba..1bbb774 100644
+--- a/src/libutil/meson.build
++++ b/src/libutil/meson.build
+@@ -170,6 +170,7 @@ sources = [ config_priv_h ] + files(
+   'processes.cc',
+   'provenance.cc',
+   'serialise.cc',
++  'signature-observation-caller.cc',
+   'signature/local-keys.cc',
+   'signature/signer.cc',
+   'source-accessor.cc',
+diff --git a/src/libutil/signature-observation-caller.cc b/src/libutil/signature-observation-caller.cc
+new file mode 100644
+index 0000000..6fb28f7
+--- /dev/null
++++ b/src/libutil/signature-observation-caller.cc
+@@ -0,0 +1,224 @@
++#include "nix/util/signature-observation-caller.hh"
++#include "nix/util/processes.hh"
++#include "nix/util/file-descriptor.hh"
++#include "nix/util/error.hh"
++
++#include <nlohmann/json.hpp>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <filesystem>
++#include <span>
++#include <thread>
++
++#include <signal.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++namespace nix {
++
++namespace {
++
++constexpr size_t MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
++constexpr size_t MAX_DIAGNOSTIC_BYTES = 64 * 1024;
++constexpr unsigned int MAX_REASONABLE_TIMEOUT_MS = 60000;
++constexpr size_t MAX_OBSERVATIONS = 128;
++
++struct DrainResult
++{
++    std::string data;
++    bool overflowed = false;
++};
++
++/**
++ * Same bounded-drain shape as Model H's caller: keeps reading (and
++ * discarding) past `cap` rather than stopping early, so a verbose
++ * provider is never left blocked on a full pipe.
++ */
++DrainResult drainBounded(int fd, size_t cap)
++{
++    DrainResult result;
++    std::byte chunk[65536];
++    while (true) {
++        size_t n;
++        try {
++            n = read(fd, std::span(chunk));
++        } catch (SystemError &) {
++            break;
++        }
++        if (n == 0)
++            break;
++        size_t room = result.data.size() < cap ? cap - result.data.size() : 0;
++        size_t take = std::min(room, n);
++        if (take > 0)
++            result.data.append(reinterpret_cast<const char *>(chunk), take);
++        if (take < n)
++            result.overflowed = true;
++    }
++    return result;
++}
++
++void writeAll(int fd, std::string_view data)
++{
++    size_t written = 0;
++    while (written < data.size()) {
++        auto remaining = std::as_bytes(std::span(data.data() + written, data.size() - written));
++        size_t n;
++        try {
++            n = write(fd, remaining, /*allowInterrupts=*/false);
++        } catch (SystemError &) {
++            break;
++        }
++        if (n == 0)
++            break;
++        written += n;
++    }
++}
++
++std::string buildVerifyRawRequestJson(const std::string & fingerprint, const std::vector<std::string> & rawSignatureEntries)
++{
++    nlohmann::json j = {
++        {"fingerprint", fingerprint},
++        {"signatures", rawSignatureEntries},
++    };
++    return j.dump();
++}
++
++} // namespace
++
++SignatureObservationProviderConfig::SignatureObservationProviderConfig(
++    std::string providerPath, std::chrono::milliseconds timeout)
++    : providerPath(std::move(providerPath))
++    , timeout(timeout)
++{
++}
++
++SignatureObservationProviderConfig SignatureObservationProviderConfig::validate(
++    std::string_view providerPath, unsigned int timeoutMs)
++{
++    if (providerPath.empty())
++        throw UsageError(
++            "'signature-observation-provider' must be set when 'signature-observation-provider-mode' is 'conjunctive'");
++
++    std::filesystem::path path{providerPath};
++    if (!path.is_absolute())
++        throw UsageError(
++            "'signature-observation-provider' must be an absolute path (got '%s'); no PATH lookup is ever performed",
++            providerPath);
++
++    if (timeoutMs == 0)
++        throw UsageError("'signature-observation-provider-timeout-ms' must be nonzero");
++    if (timeoutMs > MAX_REASONABLE_TIMEOUT_MS)
++        throw UsageError(
++            "'signature-observation-provider-timeout-ms' (%d) exceeds the maximum of %d",
++            timeoutMs,
++            MAX_REASONABLE_TIMEOUT_MS);
++
++    return SignatureObservationProviderConfig{std::string{providerPath}, std::chrono::milliseconds{timeoutMs}};
++}
++
++ObservationProviderResult invokeObservationProvider(
++    const SignatureObservationProviderConfig & config,
++    const std::string & fingerprint,
++    const std::vector<std::string> & rawSignatureEntries)
++{
++    auto requestJson = buildVerifyRawRequestJson(fingerprint, rawSignatureEntries);
++
++    Pipe stdinPipe, stdoutPipe, stderrPipe;
++    stdinPipe.create();
++    stdoutPipe.create();
++    stderrPipe.create();
++
++    int stdinReadFd = stdinPipe.readSide.get();
++    int stdoutWriteFd = stdoutPipe.writeSide.get();
++    int stderrWriteFd = stderrPipe.writeSide.get();
++    const std::string providerPath = config.providerPath;
++
++    pid_t rawPid = startProcess([providerPath, stdinReadFd, stdoutWriteFd, stderrWriteFd]() {
++        if (setpgid(0, 0) != 0)
++            _exit(127);
++
++        if (dup2(stdinReadFd, STDIN_FILENO) == -1)
++            _exit(127);
++        if (dup2(stdoutWriteFd, STDOUT_FILENO) == -1)
++            _exit(127);
++        if (dup2(stderrWriteFd, STDERR_FILENO) == -1)
++            _exit(127);
++
++        unix::closeExtraFDs();
++
++        char * const argv[] = {const_cast<char *>(providerPath.c_str()), nullptr};
++        char * const envp[] = {nullptr};
++        execve(providerPath.c_str(), argv, envp);
++        _exit(127);
++    });
++
++    stdinPipe.readSide.close();
++    stdoutPipe.writeSide.close();
++    stderrPipe.writeSide.close();
++
++    DrainResult stdoutResult, stderrResult;
++    std::thread stdoutReader([&] { stdoutResult = drainBounded(stdoutPipe.readSide.get(), MAX_RESPONSE_BYTES); });
++    std::thread stderrReader([&] { stderrResult = drainBounded(stderrPipe.readSide.get(), MAX_DIAGNOSTIC_BYTES); });
++
++    writeAll(stdinPipe.writeSide.get(), requestJson);
++    stdinPipe.writeSide.close();
++
++    std::atomic<bool> completed{false};
++    int status = 0;
++    std::thread waiter([&] {
++        Pid pid(rawPid);
++        status = pid.wait(/*allowInterrupts=*/false);
++        completed.store(true, std::memory_order_release);
++    });
++
++    auto deadline = std::chrono::steady_clock::now() + config.timeout;
++    while (!completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
++        std::this_thread::sleep_for(std::chrono::milliseconds(5));
++
++    bool timedOut = !completed.load(std::memory_order_acquire);
++    if (timedOut) {
++        ::kill(-rawPid, SIGKILL);
++        ::kill(rawPid, SIGKILL);
++    }
++
++    waiter.join();
++    stdoutReader.join();
++    stderrReader.join();
++
++    if (timedOut)
++        return ObservationProviderResult{.failed = true, .observations = {}};
++
++    if (stdoutResult.overflowed || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
++        return ObservationProviderResult{.failed = true, .observations = {}};
++
++    try {
++        auto parsed = nlohmann::json::parse(stdoutResult.data);
++        auto candidatesJson = parsed.at("candidates");
++        if (!candidatesJson.is_array() || candidatesJson.size() > MAX_OBSERVATIONS)
++            return ObservationProviderResult{.failed = true, .observations = {}};
++
++        std::vector<ObservedSignature> observations;
++        for (auto & c : candidatesJson) {
++            auto verification = c.at("verification").get<std::string>();
++            if (verification != "valid")
++                // Not this provider's job to report negative outcomes as
++                // observations -- Model O's whole point is that Nix's
++                // native policy only ever sees positively verified
++                // evidence, exactly like ValidPathInfo::VerifiedSignature.
++                continue;
++            observations.push_back(ObservedSignature{
++                .keyName = c.at("key_name").get<std::string>(),
++                .keyType = parseKeyType(c.at("algorithm").get<std::string>()),
++                .signatureId = c.at("signature_id").get<std::string>(),
++            });
++        }
++        return ObservationProviderResult{.failed = false, .observations = std::move(observations)};
++    } catch (...) {
++        return ObservationProviderResult{.failed = true, .observations = {}};
++    }
++}
++
++} // namespace nix
+-- 
+2.54.0
+
