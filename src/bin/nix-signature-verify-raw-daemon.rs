@@ -83,6 +83,32 @@ struct VerifyRawErrorResponse {
     error: String,
 }
 
+/// Batch variant added to test the batching hypothesis directly (see
+/// docs/PROCESS_VS_PROVIDER_RESULTS.md's Model S connection-reuse
+/// correction): does amortizing *decisions per round trip* -- not
+/// process-per-decision (O-process) or even connection-per-decision
+/// (Model S's original design) -- actually eliminate the per-decision
+/// floor found there? One request line carries every decision a
+/// closure needs; one response line carries every result, in the same
+/// order. Distinguished from the single-decision `VerifyRawRequest` by
+/// its `decisions` field (untagged enum, tried in declaration order).
+#[derive(serde::Deserialize)]
+struct VerifyRawBatchRequest {
+    decisions: Vec<VerifyRawRequest>,
+}
+
+#[derive(serde::Serialize)]
+struct VerifyRawBatchResponse {
+    results: Vec<VerifyRawResponse>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum IncomingRequest {
+    Batch(VerifyRawBatchRequest),
+    Single(VerifyRawRequest),
+}
+
 #[derive(Parser, Debug)]
 #[command(
     about = "Model S prototype: persistent Unix-socket R -> O verification service. See docs/CANDIDATE_ARCHITECTURES.md."
@@ -194,7 +220,7 @@ fn handle_connection(stream: UnixStream, verification_keys: &[VerificationKeyEnt
             return;
         }
 
-        let request: VerifyRawRequest = match serde_json::from_str(trimmed) {
+        let incoming: IncomingRequest = match serde_json::from_str(trimmed) {
             Ok(request) => request,
             Err(_) => {
                 write_error_line(&mut writer, "invalid request JSON");
@@ -202,20 +228,38 @@ fn handle_connection(stream: UnixStream, verification_keys: &[VerificationKeyEnt
             }
         };
 
-        let candidates = match verify_raw_evidence(
-            request.fingerprint.as_bytes(),
-            &request.signatures,
-            verification_keys,
-        ) {
-            Ok(candidates) => candidates,
-            Err(e) => {
-                write_error_line(&mut writer, &format!("{e:?}"));
-                return;
+        let encoded = match incoming {
+            IncomingRequest::Single(request) => {
+                let candidates = match verify_one(&request, verification_keys) {
+                    Ok(candidates) => candidates,
+                    Err(e) => {
+                        write_error_line(&mut writer, &e);
+                        return;
+                    }
+                };
+                serde_json::to_vec(&VerifyRawResponse { candidates })
+            }
+            IncomingRequest::Batch(batch) => {
+                let mut results = Vec::with_capacity(batch.decisions.len());
+                let mut failed = false;
+                for decision in &batch.decisions {
+                    match verify_one(decision, verification_keys) {
+                        Ok(candidates) => results.push(VerifyRawResponse { candidates }),
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    write_error_line(&mut writer, "one or more decisions in the batch failed");
+                    return;
+                }
+                serde_json::to_vec(&VerifyRawBatchResponse { results })
             }
         };
 
-        let response = VerifyRawResponse { candidates };
-        match serde_json::to_vec(&response) {
+        match encoded {
             Ok(mut encoded) => {
                 encoded.push(b'\n');
                 if writer.write_all(&encoded).is_err() {
@@ -229,6 +273,23 @@ fn handle_connection(stream: UnixStream, verification_keys: &[VerificationKeyEnt
         }
         // Loop back and read the next request on this same connection.
     }
+}
+
+/// Verify one decision's evidence against the loaded registry. Shared by
+/// both the single-decision and batch paths so they run through
+/// identical logic -- the only difference between them is how many
+/// times this is called per request line and how the results are framed
+/// back to the caller.
+fn verify_one(
+    request: &VerifyRawRequest,
+    verification_keys: &[VerificationKeyEntry],
+) -> Result<Vec<SignatureCandidate>, String> {
+    verify_raw_evidence(
+        request.fingerprint.as_bytes(),
+        &request.signatures,
+        verification_keys,
+    )
+    .map_err(|e| format!("{e:?}"))
 }
 
 fn write_error_line(stream: &mut UnixStream, message: &str) {
