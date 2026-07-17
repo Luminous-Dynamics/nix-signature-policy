@@ -1,0 +1,553 @@
+From 21cc893b91b33468ace14f49f544d26c153b6fc1 Mon Sep 17 00:00:00 2001
+From: tstoltz <tristan.stoltz@evolvingresonantcocreationism.com>
+Date: Fri, 17 Jul 2026 19:31:13 +0200
+Subject: [PATCH] Add Model S (persistent Unix-socket observation service; Nix
+ owns native policy)
+
+Wires nix-signature-verify-raw-daemon (a prototype persistent service,
+see nix-signature-policy repo) into pathInfoIsUntrusted, structurally
+identical to Model O-process's B+P composition but with a socket-connect
+caller (signature-service-caller.{hh,cc}) instead of a fork/exec caller
+-- no pipes, no reader/writer/waiter threads, just connect+write+
+shutdown(SHUT_WR)+bounded-poll-read+close. Reuses Model N's
+KeyGroup/allSignatureGroupsSatisfied policy composition, same as
+O-process and O-provider.
+
+New settings: signature-observation-service-{socket,mode,timeout-ms,
+key-groups}. A misconfigured/absent/hung/malformed-response service is
+always a hard refusal in conjunctive mode, never a silent pass --
+verified end-to-end, not just asserted (see E2E scenarios below).
+
+617/617 libstore-tests + 707/707 libutil-tests pass (no regressions).
+Real E2E, 6/6 scenarios (measurement/run-models-e2e.sh): legacy never
+connects; conjunctive admits when the service verifies a satisfied
+group; a SECOND decision against the same already-running daemon
+process also admits correctly (persistence itself exercised, not just
+asserted); conjunctive refuses on an unsatisfiable group; a missing/
+not-running service fails closed; a service that accepts a connection
+but never responds correctly times out (~1080ms against a configured
+1000ms deadline) and fails closed, rather than hanging Nix
+indefinitely -- unlike O-provider, which has no timeout mechanism at
+all for an in-process hang.
+---
+ src/libstore/include/nix/store/local-store.hh |  82 ++++++++
+ src/libstore/local-store.cc                   | 115 ++++++++++-
+ src/libutil/include/nix/util/meson.build      |   1 +
+ .../nix/util/signature-service-caller.hh      |  63 ++++++
+ src/libutil/meson.build                       |   1 +
+ src/libutil/signature-service-caller.cc       | 181 ++++++++++++++++++
+ 6 files changed, 442 insertions(+), 1 deletion(-)
+ create mode 100644 src/libutil/include/nix/util/signature-service-caller.hh
+ create mode 100644 src/libutil/signature-service-caller.cc
+
+diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
+index fde17c3..0fdd679 100644
+--- a/src/libstore/include/nix/store/local-store.hh
++++ b/src/libstore/include/nix/store/local-store.hh
+@@ -155,6 +155,88 @@ public:
+         true,
+         Xp::ConfigurableSignatureAuthorization};
+ 
++    Setting<std::string> signatureObservationServiceSocket{
++        this,
++        "",
++        "signature-observation-service-socket",
++        R"(
++          Optional. Absolute path to a persistent observation service's
++          Unix-domain socket (Model S in the authorization-boundary-
++          architecture comparison -- a prototype persistent successor
++          to `signature-observation-provider`'s spawned-helper
++          transport). The path must be absolute.
++
++          Unlike `signature-observation-provider`, no process is
++          spawned per admission decision: Nix connects to an
++          already-running service process over this socket, sends one
++          request, and reads one response per decision. The service
++          itself only reports whether a signature verifies -- it
++          cannot admit or refuse a path; Nix always composes its
++          report with Nix's own signature-group policy
++          (`signature-key-group`, shared with Models N/O-process/
++          O-provider).
++
++          This option is only settable in the global `nix.conf`, or on
++          the command line by trusted users.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<std::string> signatureObservationServiceMode{
++        this,
++        "legacy",
++        "signature-observation-service-mode",
++        R"(
++          How the result of `signature-observation-service-socket` is
++          combined with Nix's own trusted-signature check. One of:
++
++          - `legacy`: the service, if configured, is not consulted.
++            Admission is exactly Nix's existing trusted-signature
++            behavior.
++
++          - `conjunctive`: a store path is admitted only if Nix's own
++            trusted-signature check accepts it *and* the resulting
++            verified-signature observations satisfy every group in
++            `signature-key-group`. A service that is unset, refuses
++            the connection, times out, or returns a malformed response
++            is treated as a refusal, never a silent acceptance.
++            Content-addressed paths are refused under this mode rather
++            than silently admitted.
++
++          Any other value is a configuration error.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<unsigned int> signatureObservationServiceTimeoutMs{
++        this,
++        2000,
++        "signature-observation-service-timeout-ms",
++        "Milliseconds to wait for `signature-observation-service-socket` before treating the request as failed "
++        "(and, in `conjunctive` mode, refusing the path).",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
++    Setting<Strings> signatureObservationServiceKeyGroups{
++        this,
++        {},
++        "signature-observation-service-key-groups",
++        R"(
++          Zero or more required signature groups, each in the form
++          `<group-name>:<key-name>[,<key-name>...]`. Under
++          `signature-observation-service-mode = conjunctive`, a path
++          is admitted only if, for every listed group, at least one of
++          that group's key names produced a signature the service
++          verified as valid. Shared format and evaluation with Model
++          N's `signature-key-group`.
++        )",
++        {},
++        true,
++        Xp::ConfigurableSignatureAuthorization};
++
+     Setting<bool> readOnly{
+         this,
+         false,
+diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
+index 8dcef12..5e363c3 100644
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -18,6 +18,9 @@
+ #include "nix/util/users.hh"
+ #include "nix/store/store-registration.hh"
+ #include "nix/util/provenance.hh"
++#include "nix/store/signature-groups.hh"
++#include "nix/util/signature-service-caller.hh"
++#include "nix/util/signature/local-keys.hh"
+ 
+ #include <algorithm>
+ #include <cstring>
+@@ -998,9 +1001,119 @@ const PublicKeys & LocalStore::getPublicKeys()
+     return *state->publicKeys;
+ }
+ 
++namespace {
++
++/**
++ * Parse `<group-name>:<key-name>[,<key-name>...]` entries into
++ * `KeyGroup`s. Throws (not a silent skip) on a malformed entry, so a
++ * typo in the setting is a hard configuration error, not a silently
++ * weaker policy. Identical shape to Model O-provider's parser -- not
++ * shared code, per this comparison's isolation discipline (each
++ * model's branch is independently buildable from the shared
++ * foundation).
++ */
++std::vector<KeyGroup> parseSignatureObservationServiceKeyGroups(const Strings & entries)
++{
++    std::vector<KeyGroup> groups;
++    for (auto & entry : entries) {
++        auto colon = entry.find(':');
++        if (colon == std::string::npos || colon == 0 || colon == entry.size() - 1)
++            throw Error(
++                "invalid signature-observation-service-key-groups entry '%s' "
++                "(expected '<group-name>:<key-name>[,<key-name>...]')",
++                entry);
++        KeyGroup group{.name = entry.substr(0, colon), .requiredKeyNames = {}};
++        std::string rest = entry.substr(colon + 1);
++        size_t pos = 0;
++        while (pos < rest.size()) {
++            auto comma = rest.find(',', pos);
++            auto keyName = rest.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
++            if (keyName.empty())
++                throw Error(
++                    "invalid signature-observation-service-key-groups entry '%s' (empty key name)", entry);
++            group.requiredKeyNames.push_back(keyName);
++            if (comma == std::string::npos)
++                break;
++            pos = comma + 1;
++        }
++        groups.push_back(std::move(group));
++    }
++    return groups;
++}
++
++} // namespace
++
+ bool LocalStore::pathInfoIsUntrusted(const ValidPathInfo & info)
+ {
+-    return config->requireSigs && !info.checkSignatures(*this, getPublicKeys());
++    if (!config->requireSigs)
++        return false;
++
++    auto sigCheck = info.checkSignaturesDetailed(*this, getPublicKeys());
++    bool nativeTrusted = sigCheck.validCount != 0;
++
++    auto mode = config->signatureObservationServiceMode.get();
++    if (mode == "legacy")
++        return !nativeTrusted;
++    if (mode != "conjunctive")
++        throw Error(
++            "invalid signature-observation-service-mode '%s' (must be 'legacy' or 'conjunctive')", mode);
++
++    if (info.isContentAddressed(*this)) {
++        warn(
++            "signature-observation-service-mode=conjunctive: content-addressed path '%s' has no "
++            "meaningful signature policy; refusing",
++            printStorePath(info.path));
++        return true;
++    }
++
++    if (!nativeTrusted)
++        return true;
++
++    auto serviceConfig = SignatureObservationServiceConfig::validate(
++        config->signatureObservationServiceSocket.get(), config->signatureObservationServiceTimeoutMs.get());
++    auto groups = parseSignatureObservationServiceKeyGroups(config->signatureObservationServiceKeyGroups.get());
++
++    /* Only key names actually referenced by a configured group are
++       candidates for the service at all -- same rationale as
++       O-provider: the service need not support every algorithm Nix's
++       native check does. */
++    std::set<std::string> requiredKeyNames;
++    for (auto & group : groups)
++        for (auto & name : group.requiredKeyNames)
++            requiredKeyNames.insert(name);
++
++    /* One request per admission decision (not per signature -- the
++       request carries every raw `Sig:` entry the configured groups
++       care about together), sent over a fresh connection to the
++       already-running service. */
++    auto fp = info.fingerprint(*this);
++    auto & publicKeys = getPublicKeys();
++    std::vector<std::string> rawSignatureEntries;
++    for (auto & sig : info.sigs)
++        if (requiredKeyNames.contains(sig.keyName))
++            rawSignatureEntries.push_back(sig.to_string());
++
++    auto result = invokeObservationService(serviceConfig, fp, rawSignatureEntries);
++    if (result.failed)
++        return true;
++
++    std::vector<ValidPathInfo::VerifiedSignature> observed;
++    for (auto & o : result.observations) {
++        auto key = publicKeys.find(o.keyName);
++        if (key == publicKeys.end())
++            // The service claimed a key name Nix doesn't itself trust
++            // -- ignore it rather than trust the service's own
++            // algorithm label. Nix's trusted-key registry, not the
++            // service, decides which keys are eligible.
++            continue;
++        observed.push_back(ValidPathInfo::VerifiedSignature{
++            .keyName = o.keyName,
++            .keyType = key->second->keyType(),
++            .signatureId = o.signatureId,
++        });
++    }
++
++    return !allSignatureGroupsSatisfied(observed, groups);
+ }
+ 
+ bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
+diff --git a/src/libutil/include/nix/util/meson.build b/src/libutil/include/nix/util/meson.build
+index 381c1e6..384ff1d 100644
+--- a/src/libutil/include/nix/util/meson.build
++++ b/src/libutil/include/nix/util/meson.build
+@@ -80,6 +80,7 @@ headers = [ config_pub_h ] + files(
+   'sentry.hh',
+   'serialise.hh',
+   'signals.hh',
++  'signature-service-caller.hh',
+   'signature/local-keys.hh',
+   'signature/signer.hh',
+   'socket.hh',
+diff --git a/src/libutil/include/nix/util/signature-service-caller.hh b/src/libutil/include/nix/util/signature-service-caller.hh
+new file mode 100644
+index 0000000..67b632a
+--- /dev/null
++++ b/src/libutil/include/nix/util/signature-service-caller.hh
+@@ -0,0 +1,63 @@
++#pragma once
++///@file
++
++#include <chrono>
++#include <cstdint>
++#include <filesystem>
++#include <string>
++#include <vector>
++
++namespace nix {
++
++/**
++ * A single observed signature returned by the persistent observation
++ * service (Model S). Same shape as O-process's `ObservedSignature` --
++ * this model differs from O-process only in transport (a long-lived
++ * Unix-domain socket connection instead of a fresh fork+exec per
++ * decision), not in wire semantics.
++ */
++struct ServiceObservedSignature
++{
++    std::string keyName;
++    std::string keyType;
++    std::string signatureId;
++};
++
++struct ServiceObservationResult
++{
++    bool failed = false;
++    std::vector<ServiceObservedSignature> observations;
++};
++
++struct SignatureObservationServiceConfig
++{
++    /**
++     * Absolute path to the service's Unix-domain socket.
++     */
++    std::filesystem::path socketPath;
++    std::chrono::milliseconds timeout;
++
++    static SignatureObservationServiceConfig validate(std::string_view socketPath, unsigned int timeoutMs);
++};
++
++/**
++ * Connect to the persistent observation service at
++ * `config.socketPath`, send one request (fingerprint + raw signature
++ * entries), and return the parsed observations. A new connection is
++ * made per call -- this prototype does not pool or reuse connections
++ * across admission decisions, only the *service process* persists.
++ *
++ * Throws only for configuration errors (validated up front by
++ * `SignatureObservationServiceConfig::validate`). Connection failure,
++ * timeout, or a malformed response are reported via
++ * `ServiceObservationResult::failed`, never a thrown exception -- a
++ * misbehaving or absent service is always a hard refusal upstream in
++ * `pathInfoIsUntrusted`, never a silent pass, matching every other
++ * model in this comparison.
++ */
++ServiceObservationResult invokeObservationService(
++    const SignatureObservationServiceConfig & config,
++    const std::string & fingerprint,
++    const std::vector<std::string> & rawSignatureEntries);
++
++} // namespace nix
+diff --git a/src/libutil/meson.build b/src/libutil/meson.build
+index 3ce3dba..b4b0138 100644
+--- a/src/libutil/meson.build
++++ b/src/libutil/meson.build
+@@ -170,6 +170,7 @@ sources = [ config_priv_h ] + files(
+   'processes.cc',
+   'provenance.cc',
+   'serialise.cc',
++  'signature-service-caller.cc',
+   'signature/local-keys.cc',
+   'signature/signer.cc',
+   'source-accessor.cc',
+diff --git a/src/libutil/signature-service-caller.cc b/src/libutil/signature-service-caller.cc
+new file mode 100644
+index 0000000..2002fdb
+--- /dev/null
++++ b/src/libutil/signature-service-caller.cc
+@@ -0,0 +1,181 @@
++#include "nix/util/signature-service-caller.hh"
++#include "nix/util/unix-domain-socket.hh"
++#include "nix/util/file-descriptor.hh"
++#include "nix/util/error.hh"
++
++#include <nlohmann/json.hpp>
++
++#include <algorithm>
++#include <chrono>
++#include <climits>
++#include <cstddef>
++#include <span>
++
++#include <poll.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++namespace nix {
++
++namespace {
++
++constexpr size_t MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
++constexpr size_t MAX_OBSERVATIONS = 128;
++constexpr unsigned int MAX_REASONABLE_TIMEOUT_MS = 60000;
++
++std::string buildRequestJson(const std::string & fingerprint, const std::vector<std::string> & rawSignatureEntries)
++{
++    nlohmann::json j = {
++        {"fingerprint", fingerprint},
++        {"signatures", rawSignatureEntries},
++    };
++    return j.dump();
++}
++
++/**
++ * Read until EOF or `deadline`, bounded to `cap` bytes kept (excess is
++ * discarded, not left to block a full pipe -- though a Unix socket
++ * from a well-behaved service should never fill a pipe buffer the way
++ * a verbose subprocess might; kept for defense in depth and symmetry
++ * with every other model's caller in this comparison).
++ *
++ * Returns `{data, true}` on any timeout, poll error, or read error --
++ * the caller treats all of these as `failed`, never distinguishes a
++ * partial read from a clean one.
++ */
++struct DrainResult
++{
++    std::string data;
++    bool timedOutOrErrored = false;
++};
++
++DrainResult drainWithDeadline(int fd, size_t cap, std::chrono::steady_clock::time_point deadline)
++{
++    DrainResult result;
++    std::byte chunk[65536];
++    while (true) {
++        auto now = std::chrono::steady_clock::now();
++        if (now >= deadline) {
++            result.timedOutOrErrored = true;
++            return result;
++        }
++        auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
++        struct pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};
++        int pollResult = poll(&pfd, 1, static_cast<int>(std::min<long>(remainingMs, INT_MAX)));
++        if (pollResult < 0) {
++            result.timedOutOrErrored = true;
++            return result;
++        }
++        if (pollResult == 0) {
++            // Deadline reached with nothing to read.
++            result.timedOutOrErrored = true;
++            return result;
++        }
++        if (pfd.revents & (POLLERR | POLLNVAL)) {
++            result.timedOutOrErrored = true;
++            return result;
++        }
++        size_t n;
++        try {
++            n = read(fd, std::span(chunk));
++        } catch (SystemError &) {
++            result.timedOutOrErrored = true;
++            return result;
++        }
++        if (n == 0)
++            // EOF: the service closed the connection after writing its
++            // full response. This is the normal, successful end state.
++            return result;
++        size_t room = result.data.size() < cap ? cap - result.data.size() : 0;
++        size_t take = std::min(room, n);
++        if (take > 0)
++            result.data.append(reinterpret_cast<const char *>(chunk), take);
++        // Bytes beyond `cap` are silently discarded, not treated as an
++        // error -- matches the other models' "overflow -> failed"
++        // handling being applied by the caller after this returns,
++        // via the response-parse step naturally rejecting an
++        // over-long/truncated JSON body.
++    }
++}
++
++} // namespace
++
++SignatureObservationServiceConfig
++SignatureObservationServiceConfig::validate(std::string_view socketPath, unsigned int timeoutMs)
++{
++    if (socketPath.empty())
++        throw UsageError(
++            "'signature-observation-service-socket' must be set when 'signature-observation-service-mode' is 'conjunctive'");
++
++    std::filesystem::path path{socketPath};
++    if (!path.is_absolute())
++        throw UsageError(
++            "'signature-observation-service-socket' must be an absolute path (got '%s')", socketPath);
++
++    if (timeoutMs == 0)
++        throw UsageError("'signature-observation-service-timeout-ms' must be nonzero");
++    if (timeoutMs > MAX_REASONABLE_TIMEOUT_MS)
++        throw UsageError(
++            "'signature-observation-service-timeout-ms' (%d) exceeds the maximum of %d",
++            timeoutMs,
++            MAX_REASONABLE_TIMEOUT_MS);
++
++    return SignatureObservationServiceConfig{path, std::chrono::milliseconds{timeoutMs}};
++}
++
++ServiceObservationResult invokeObservationService(
++    const SignatureObservationServiceConfig & config,
++    const std::string & fingerprint,
++    const std::vector<std::string> & rawSignatureEntries)
++{
++    auto deadline = std::chrono::steady_clock::now() + config.timeout;
++    auto requestJson = buildRequestJson(fingerprint, rawSignatureEntries);
++
++    AutoCloseFD fd;
++    try {
++        fd = connect(config.socketPath);
++    } catch (Error &) {
++        // No service listening, permission denied, stale/missing
++        // socket file, etc. -- always a hard failure upstream, never
++        // silently treated as "no observations required."
++        return ServiceObservationResult{.failed = true, .observations = {}};
++    }
++
++    try {
++        writeFull(fd.get(), requestJson, /*allowInterrupts=*/false);
++    } catch (SystemError &) {
++        return ServiceObservationResult{.failed = true, .observations = {}};
++    }
++    // Half-close: signals to the service that the full request has
++    // been sent, mirroring how every fork/exec-based caller in this
++    // comparison closes the write side of the child's stdin pipe.
++    shutdown(fd.get(), SHUT_WR);
++
++    auto drained = drainWithDeadline(fd.get(), MAX_RESPONSE_BYTES, deadline);
++    if (drained.timedOutOrErrored)
++        return ServiceObservationResult{.failed = true, .observations = {}};
++
++    try {
++        auto parsed = nlohmann::json::parse(drained.data);
++        auto candidatesJson = parsed.at("candidates");
++        if (!candidatesJson.is_array() || candidatesJson.size() > MAX_OBSERVATIONS)
++            return ServiceObservationResult{.failed = true, .observations = {}};
++
++        std::vector<ServiceObservedSignature> observations;
++        for (auto & c : candidatesJson) {
++            auto verification = c.at("verification").get<std::string>();
++            if (verification != "valid")
++                continue;
++            observations.push_back(ServiceObservedSignature{
++                .keyName = c.at("key_name").get<std::string>(),
++                .keyType = c.at("algorithm").get<std::string>(),
++                .signatureId = c.at("signature_id").get<std::string>(),
++            });
++        }
++        return ServiceObservationResult{.failed = false, .observations = std::move(observations)};
++    } catch (...) {
++        return ServiceObservationResult{.failed = true, .observations = {}};
++    }
++}
++
++} // namespace nix
+-- 
+2.54.0
+

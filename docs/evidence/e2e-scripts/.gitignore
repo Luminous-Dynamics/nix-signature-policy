@@ -1,6 +1,8 @@
 dest-h-*/
 dest-oprovider-*/
 dest-oprovider-crash.std*
+dest-models-*/
 provider/*.so
 hook-refuse.sh
 hook-crash.sh
+models-daemon.log

@@ -49,9 +49,11 @@ git am /path/to/0000-shared-foundation-checkSignaturesDetailed.patch
 | H | `0001-model-h-wiring-and-caller.patch` , `0002-model-h-functional-test.patch` (**not** N — H is an independent branch from the shared foundation, not layered on N) | `8a01e8c` |
 | O-process | `0001-model-n-...` , `0002-model-o-process-external-verifier.patch` | `187029b` |
 | O-provider | `0001-model-n-...` , `0002-model-o-provider-inprocess-verifier.patch` | `840d22e` |
+| S | `0001-model-n-...` , `0002-model-s-persistent-service.patch` | `21cc893` |
 
-Note the deliberate numbering collision: there are two different
-"`0002`" patches for H's branch vs. every other branch, and N's patch is
+Note the deliberate numbering collision: there are multiple different
+"`0002`" patches (one per independent branch off the shared foundation:
+H, O-process, O-provider, S) and N's patch is
 reused verbatim (byte-identical diff, confirmed) as the second step for
 P/T/O-process/O-provider. This mirrors the actual commit graph rather
 than flattening it into one fictitious linear sequence — see
