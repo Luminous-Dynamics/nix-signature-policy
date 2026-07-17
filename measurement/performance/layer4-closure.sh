@@ -14,11 +14,13 @@ declare -A BINS=(
     [baseline]="${NIX_STORE_BASELINE:?}"
     [oprocess_real]="${NIX_STORE_OPROCESS:?}"
     [oprovider]="${NIX_STORE_OPROVIDER:?}"
+    [models_s]="${NIX_STORE_MODELS:-${NIX_STORE_OPROVIDER:?}}"
 )
 declare -A EXTRA=(
     [baseline]=""
     [oprocess_real]="&signature-observation-provider-mode=conjunctive&signature-observation-provider=$FIX/observation-provider-lean.sh&signature-observation-provider-timeout-ms=2000&signature-key-group=g%3Aacme-release-ed25519-1"
     [oprovider]="&signature-observation-provider-mode=conjunctive&signature-observation-provider-library=$HERE/../provider/libexample-provider.so&signature-observation-provider-key-groups=g%3Aacme-release-ed25519-1"
+    [models_s]="&signature-observation-service-mode=conjunctive&signature-observation-service-socket=${MODEL_S_SOCK:-/tmp/model-s-perf.sock}&signature-observation-service-timeout-ms=2000&signature-observation-service-key-groups=g%3Aacme-release-ed25519-1"
 )
 
 emit() {
@@ -52,7 +54,7 @@ trial() {
 
 for round in $(seq 1 "$ROUNDS"); do
     for n in 1 10 100; do
-        for name in baseline oprocess_real oprovider; do
+        for name in baseline oprocess_real oprovider models_s; do
             trial "$name" "$n" "$round"
         done
     done
