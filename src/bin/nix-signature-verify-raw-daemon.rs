@@ -33,9 +33,26 @@
 //! model every other transport in this comparison uses (one OS-level
 //! unit of work per admission decision) rather than introducing an
 //! async runtime dependency for a prototype.
+//!
+//! Wire framing: newline-delimited JSON (one request per line, one
+//! response per line), so a single connection can serve many
+//! sequential requests -- added specifically so the Nix-side caller
+//! can cache and reuse a connection across a closure's multiple
+//! admission decisions instead of connecting fresh per decision (see
+//! docs/PROCESS_VS_PROVIDER_RESULTS.md's "Model S prototype" section
+//! for why the original connect-per-decision design didn't amortize
+//! as well as hoped). Safe with compact JSON output, which always
+//! escapes literal newline bytes inside string values as `\n` (two
+//! characters), never emits one raw. Not a robustness feature: an
+//! oversized or malformed line is treated the same as any other
+//! failure (connection closed), and a single very long line is read
+//! in full before that check runs, bounded only by available memory
+//! -- an accepted limitation given this is a local, same-user Unix
+//! socket (0600), matching every other model's trust boundary in this
+//! comparison, not a service exposed to untrusted peers.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -150,54 +167,73 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn handle_connection(mut stream: UnixStream, verification_keys: &[VerificationKeyEntry]) {
-    let mut bytes = Vec::new();
-    let read_result = (&mut stream)
-        .take((MAX_REQUEST_BYTES + 1) as u64)
-        .read_to_end(&mut bytes);
-    if read_result.is_err() {
-        write_error(&mut stream, "failed to read request");
-        return;
-    }
-    if bytes.len() > MAX_REQUEST_BYTES {
-        write_error(&mut stream, "request too large");
-        return;
-    }
+fn handle_connection(stream: UnixStream, verification_keys: &[VerificationKeyEntry]) {
+    let read_half = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(read_half);
+    let mut writer = stream;
+    let mut line = String::new();
 
-    let request: VerifyRawRequest = match serde_json::from_slice(&bytes) {
-        Ok(request) => request,
-        Err(_) => {
-            write_error(&mut stream, "invalid request JSON");
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            // EOF: the client closed its write side (or the whole
+            // connection). Normal end of a session, not an error.
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        let trimmed = line.trim_end_matches('\n');
+        if trimmed.len() > MAX_REQUEST_BYTES {
+            write_error_line(&mut writer, "request too large");
             return;
         }
-    };
 
-    let candidates = match verify_raw_evidence(
-        request.fingerprint.as_bytes(),
-        &request.signatures,
-        verification_keys,
-    ) {
-        Ok(candidates) => candidates,
-        Err(e) => {
-            write_error(&mut stream, &format!("{e:?}"));
-            return;
-        }
-    };
+        let request: VerifyRawRequest = match serde_json::from_str(trimmed) {
+            Ok(request) => request,
+            Err(_) => {
+                write_error_line(&mut writer, "invalid request JSON");
+                return;
+            }
+        };
 
-    let response = VerifyRawResponse { candidates };
-    match serde_json::to_vec(&response) {
-        Ok(encoded) => {
-            let _ = stream.write_all(&encoded);
+        let candidates = match verify_raw_evidence(
+            request.fingerprint.as_bytes(),
+            &request.signatures,
+            verification_keys,
+        ) {
+            Ok(candidates) => candidates,
+            Err(e) => {
+                write_error_line(&mut writer, &format!("{e:?}"));
+                return;
+            }
+        };
+
+        let response = VerifyRawResponse { candidates };
+        match serde_json::to_vec(&response) {
+            Ok(mut encoded) => {
+                encoded.push(b'\n');
+                if writer.write_all(&encoded).is_err() {
+                    return;
+                }
+            }
+            Err(_) => {
+                write_error_line(&mut writer, "failed to encode response");
+                return;
+            }
         }
-        Err(_) => write_error(&mut stream, "failed to encode response"),
+        // Loop back and read the next request on this same connection.
     }
 }
 
-fn write_error(stream: &mut UnixStream, message: &str) {
+fn write_error_line(stream: &mut UnixStream, message: &str) {
     let response = VerifyRawErrorResponse {
         error: message.to_string(),
     };
-    if let Ok(encoded) = serde_json::to_vec(&response) {
+    if let Ok(mut encoded) = serde_json::to_vec(&response) {
+        encoded.push(b'\n');
         let _ = stream.write_all(&encoded);
     }
 }
