@@ -73,9 +73,13 @@ mechanism); at realistic multi-path-closure and concurrent-load
 granularity the difference is decisive — O-process forks a fresh
 subprocess per path (13x slower than baseline at a 100-path closure),
 O-provider does not (statistically indistinguishable from baseline,
-pulls ahead of it under concurrency). Recommendation: investigate a
-persistent-service successor (Model S) for O-process; do not build
-authorization caching for either model, per
+pulls ahead of it under concurrency). Model S, a persistent Unix-socket
+service prototype built and measured in response, is a real but
+*partial* improvement (1.7x faster than O-process at 100 paths) that
+does not close the gap to O-provider — traced to the prototype
+reconnecting per decision rather than reusing a connection across a
+closure, a specific, named, not-yet-built next refinement. Do not
+build authorization caching for any model, per
 [`docs/CACHE_DECISION_QUESTIONS.md`](docs/CACHE_DECISION_QUESTIONS.md)'s
 preserved-but-unanswered question list.
 
