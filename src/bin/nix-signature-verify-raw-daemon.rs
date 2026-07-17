@@ -45,7 +45,7 @@ use std::sync::Arc;
 use clap::Parser;
 use nix_signature_policy::policy::SignatureCandidate;
 use nix_signature_policy::raw_evidence::{
-    verify_raw_evidence, RawSignatureEntry, VerificationKeyEntry,
+    RawSignatureEntry, VerificationKeyEntry, verify_raw_evidence,
 };
 
 const MAX_REQUEST_BYTES: usize = 1_048_576;
