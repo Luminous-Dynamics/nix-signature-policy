@@ -88,7 +88,11 @@ pub struct AuthorizationRequest {
     pub candidates: Vec<SignatureCandidate>,
 }
 
-/// Serializable form of [`EvaluationContext`].
+/// Serializable form of [`EvaluationContext`]. Carried on the wire inside
+/// [`AuthorizationRequest`] -- see [`EvaluationContext::evaluation_time`]'s
+/// doc comment (`crate::policy`) for the field's authority model
+/// (caller-authoritative, never altered by a helper this crate invokes)
+/// and boundary conventions; that documentation is not duplicated here.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SerializableEvaluationContext {

@@ -304,8 +304,56 @@ pub struct SignaturePolicy {
 /// External state required for rollback-safe policy evaluation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EvaluationContext {
+    /// **Authority model** (raised by an external review, not previously
+    /// documented at this field): this is a caller-authoritative value,
+    /// not a value this crate ever observes independently. Whoever
+    /// constructs the `AuthorizationRequest` this context comes from --
+    /// in production, the real Nix caller reading its own trusted OS
+    /// clock -- is solely responsible for its accuracy. A helper process
+    /// this crate invokes (`src/caller.rs`) only ever *reads*
+    /// `evaluation_time` as part of evaluating a request; there is no
+    /// channel by which a helper's response can alter or substitute the
+    /// time a decision was evaluated against. A compromised or
+    /// misconfigured *caller*, not a compromised helper, is the actual
+    /// risk this value carries -- e.g. a caller that selects a timestamp
+    /// before a key's `valid_until` or a policy's `expires_at` to revive
+    /// evidence that should no longer be trusted. Nothing in this crate
+    /// can detect that from the callee side; it is a property the caller
+    /// must uphold, the same way `minimum_policy_epoch` below depends on
+    /// the caller correctly remembering rollback state.
+    ///
+    /// **Boundary convention**: every lifecycle window this value is
+    /// compared against (`SignaturePolicy::active_from`/`expires_at`,
+    /// `PolicyClause::active_from`/`active_until`,
+    /// `TrustedKey::valid_from`/`valid_until`) uses the same half-open
+    /// `[start, end)` convention: the start bound is inclusive
+    /// (`evaluation_time == start` is already active/valid), the end
+    /// bound is exclusive (`evaluation_time == end` is already
+    /// inactive/expired). See `policy_active_from_boundary_is_inclusive`,
+    /// `policy_expires_at_boundary_is_exclusive`,
+    /// `clause_active_window_boundaries_are_half_open`,
+    /// `key_valid_from_boundary_is_inclusive`, and
+    /// `key_valid_until_boundary_is_exclusive` in this module's tests for
+    /// the exact edges pinned down.
+    ///
+    /// **Unusual values**: zero, negative, and `i64::{MIN,MAX}` are not
+    /// special-cased -- they participate in ordinary integer comparisons.
+    /// A policy with no lifecycle window set is unaffected by the clock
+    /// value at all; one that does set a window simply treats an extreme
+    /// value as "far outside it," failing closed rather than doing
+    /// anything surprising. See `extreme_evaluation_time_does_not_panic_or_overflow`.
+    ///
+    /// **Not yet addressed** (left for a dedicated follow-up rather than
+    /// folded into this documentation pass): offline replay semantics
+    /// (distinguishing the time a decision was originally evaluated
+    /// against from the time a receipt is later replayed/audited) and
+    /// permissible clock skew are not modeled by this crate at all today.
     pub evaluation_time: i64,
     /// Highest policy epoch already committed for this policy domain.
+    /// Same caller-authoritative-value model as `evaluation_time` above:
+    /// this crate trusts the caller to have remembered its own prior
+    /// commitments correctly (see `src/state.rs`'s trust-state
+    /// checkpoints for the mechanism a real caller uses to do that).
     pub minimum_policy_epoch: u64,
 }
 
@@ -1690,6 +1738,147 @@ mod tests {
         );
         assert_eq!(decision.decision, Decision::Refuse);
         assert!(decision.reason_codes.contains(&ReasonCode::NoActiveClause));
+    }
+
+    // -----------------------------------------------------------------
+    // evaluation_time boundary semantics. `evaluation_time` is not this
+    // crate's own clock -- it is a caller-authoritative value carried in
+    // `AuthorizationRequest.evaluation_context` (see
+    // `EvaluationContext`/`SerializableEvaluationContext`'s doc comments):
+    // whoever constructs the request (in production, the real Nix caller,
+    // reading its own trusted OS clock) is solely responsible for its
+    // accuracy. A helper this crate invokes only ever *reads* this value
+    // during evaluation; it has no channel to alter it. Every lifecycle
+    // window in this module -- policy `[active_from, expires_at)`, clause
+    // `[active_from, active_until)`, key `[valid_from, valid_until)` -- uses
+    // the same half-open convention: the start bound is inclusive, the end
+    // bound is exclusive. These tests pin that convention at its exact
+    // edges rather than leaving it implicit in the comparison operators.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn policy_active_from_boundary_is_inclusive() {
+        let mut future = policy(&[("classical", 1)]);
+        future.active_from = Some(100);
+        let keys = [key("ed", "cache", "owner", "ed25519")];
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+
+        let before = evaluate_policy(&future, &keys, &candidates, 99);
+        assert_eq!(before.decision, Decision::Refuse);
+        assert!(before.reason_codes.contains(&ReasonCode::PolicyNotActive));
+
+        let at_boundary = evaluate_policy(&future, &keys, &candidates, 100);
+        assert_eq!(at_boundary.decision, Decision::Accept);
+    }
+
+    #[test]
+    fn policy_expires_at_boundary_is_exclusive() {
+        let mut expiring = policy(&[("classical", 1)]);
+        expiring.expires_at = Some(100);
+        let keys = [key("ed", "cache", "owner", "ed25519")];
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+
+        let last_valid_instant = evaluate_policy(&expiring, &keys, &candidates, 99);
+        assert_eq!(last_valid_instant.decision, Decision::Accept);
+
+        let at_boundary = evaluate_policy(&expiring, &keys, &candidates, 100);
+        assert_eq!(at_boundary.decision, Decision::Refuse);
+        assert!(
+            at_boundary
+                .reason_codes
+                .contains(&ReasonCode::PolicyExpired)
+        );
+    }
+
+    #[test]
+    fn clause_active_window_boundaries_are_half_open() {
+        let mut windowed = policy(&[("classical", 1)]);
+        windowed.accept_if_any[0].active_from = Some(100);
+        windowed.accept_if_any[0].active_until = Some(200);
+        let keys = [key("ed", "cache", "owner", "ed25519")];
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+
+        assert_eq!(
+            evaluate_policy(&windowed, &keys, &candidates, 99).decision,
+            Decision::Refuse,
+            "one instant before active_from must not be active"
+        );
+        assert_eq!(
+            evaluate_policy(&windowed, &keys, &candidates, 100).decision,
+            Decision::Accept,
+            "active_from itself must already be active (inclusive start)"
+        );
+        assert_eq!(
+            evaluate_policy(&windowed, &keys, &candidates, 199).decision,
+            Decision::Accept,
+            "one instant before active_until must still be active"
+        );
+        assert_eq!(
+            evaluate_policy(&windowed, &keys, &candidates, 200).decision,
+            Decision::Refuse,
+            "active_until itself must already be inactive (exclusive end)"
+        );
+    }
+
+    #[test]
+    fn key_valid_from_boundary_is_inclusive() {
+        let base = policy(&[("classical", 1)]);
+        let mut future_key = key("ed", "cache", "owner", "ed25519");
+        future_key.valid_from = Some(100);
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+
+        let before = evaluate_policy(&base, &[future_key.clone()], &candidates, 99);
+        assert_eq!(before.decision, Decision::Refuse);
+
+        let at_boundary = evaluate_policy(&base, &[future_key], &candidates, 100);
+        assert_eq!(at_boundary.decision, Decision::Accept);
+    }
+
+    #[test]
+    fn key_valid_until_boundary_is_exclusive() {
+        let base = policy(&[("classical", 1)]);
+        let mut expiring_key = key("ed", "cache", "owner", "ed25519");
+        expiring_key.valid_until = Some(100);
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+
+        let last_valid_instant = evaluate_policy(&base, &[expiring_key.clone()], &candidates, 99);
+        assert_eq!(last_valid_instant.decision, Decision::Accept);
+
+        let at_boundary = evaluate_policy(&base, &[expiring_key], &candidates, 100);
+        assert_eq!(at_boundary.decision, Decision::Refuse);
+    }
+
+    #[test]
+    fn extreme_evaluation_time_does_not_panic_or_overflow() {
+        // Zero and negative evaluation_time are not special-cased anywhere
+        // in this module -- they compare as ordinary i64 values, which is
+        // the correct, safe default: a policy with no active_from/expires_at
+        // set (the common case) is unaffected by the clock value at all,
+        // and a policy that DOES set a lifecycle window simply treats a
+        // very-negative time as "long before any real window," failing
+        // closed rather than doing anything special. What this test
+        // actually pins down is the *absence* of a crash or wraparound at
+        // the i64 extremes, not a specific accept/refuse outcome.
+        let unconditional = policy(&[("classical", 1)]);
+        let keys = [key("ed", "cache", "owner", "ed25519")];
+        let candidates = [candidate("cache", "ed25519", "ed-sig")];
+        for extreme in [i64::MIN, 0, i64::MAX] {
+            let decision = evaluate_policy(&unconditional, &keys, &candidates, extreme);
+            assert_eq!(
+                decision.decision,
+                Decision::Accept,
+                "a policy with no lifecycle window must accept regardless of clock value, extreme={extreme}"
+            );
+        }
+
+        let mut windowed = policy(&[("classical", 1)]);
+        windowed.active_from = Some(0);
+        windowed.expires_at = Some(i64::MAX);
+        assert_eq!(
+            evaluate_policy(&windowed, &keys, &candidates, i64::MIN).decision,
+            Decision::Refuse,
+            "i64::MIN must be treated as far before active_from, not wrap around"
+        );
     }
 
     #[test]
