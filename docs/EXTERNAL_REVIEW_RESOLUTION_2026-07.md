@@ -79,5 +79,21 @@ as it lands.
   is pre-existing documented timing-under-load flakiness unrelated to this
   change — confirmed by re-running in isolation and confirming the full
   suite passes cleanly on a subsequent run).
-- **Stage 1b — `evaluation_time` trust boundary**: pending.
+- **Stage 1b — `evaluation_time` trust boundary**: done. The field carried
+  no documentation of its authority model at all. Traced how it actually
+  flows (`EvaluationContext`/`SerializableEvaluationContext`, wire-carried
+  inside `AuthorizationRequest`, read-only for every downstream lifecycle
+  comparison) and documented it explicitly: the caller (in production, the
+  real Nix caller reading its own OS clock) is solely responsible for its
+  accuracy; a helper process only ever reads it, has no channel to alter
+  it; a compromised *caller*, not a compromised helper, is the actual
+  risk. Documented the half-open `[start, end)` boundary convention
+  already implicit in all three lifecycle-window comparisons (policy
+  `active_from`/`expires_at`, clause `active_from`/`active_until`, key
+  `valid_from`/`valid_until`), and explicitly flagged offline-replay
+  semantics and clock skew as not modeled yet (a real gap, left for a
+  dedicated follow-up rather than silently glossed over here). Added 6
+  boundary tests at exactly `t-1`/`t` for all three window types plus an
+  `i64::{MIN,MAX}` overflow/panic check — all passed on first run, meaning
+  this was a documentation and test-coverage gap, not a behavioral bug.
 - Stages 2–13: not started.
