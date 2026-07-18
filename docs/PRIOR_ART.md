@@ -36,7 +36,7 @@ of that representation.
 | [DeterminateSystems/nix-src#449](https://github.com/DeterminateSystems/nix-src/pull/449) | Merged 2026-05-20 | Native key generation, parsing, signing, and verification for `ecdsa-p384` and `ml-dsa-{44,65,87}` alongside Ed25519. |
 | [NixOS/nix#15926](https://github.com/NixOS/nix/pull/15926) | Open | Upstream-oriented `KeyType` and polymorphic `PublicKey`/`SecretKey` abstraction, extracted from the Determinate work. The reviewed PR currently introduces the abstraction rather than the full Determinate algorithm set. |
 | [NixOS/nix#14451](https://github.com/NixOS/nix/issues/14451) | Open proposal | A `trusted-signatures-command` hook for richer policies including rotation, certificate chains, revocation, thresholds, and attestations. Its proposed fallback is permissive OR between built-in and external verification, so a mandatory policy would need an authoritative mode. |
-| [NixOS/rfcs#202](https://github.com/NixOS/rfcs/pull/202) | Open | The original `Sig-PQC:` RFC and the subsequent public reframing: reuse ordinary signatures where possible and focus on required groups, migration states, and downgrade resistance. |
+| [NixOS/rfcs#202](https://github.com/NixOS/rfcs/pull/202) | Closed (verified 2026-07-18; this doc's "Status reviewed" date above predates the closure) | The original `Sig-PQC:` RFC and the subsequent public reframing: reuse ordinary signatures where possible and focus on required groups, migration states, and downgrade resistance. |
 
 The repository also pins the Nix source snapshot used for its original
 verification-semantics analysis in `README.md` and the historical RFC.
