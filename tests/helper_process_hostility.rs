@@ -156,6 +156,92 @@ fn non_executable_file_is_a_spawn_failure() {
 }
 
 // ---------------------------------------------------------------------
+// CallerConfig::validate -- rejected before any process is spawned.
+// ---------------------------------------------------------------------
+
+#[test]
+fn relative_command_is_rejected_without_spawning() {
+    let dir = tmp();
+    // A relative command containing a separator resolves against the
+    // child's working_dir after chdir(), independent of PATH being
+    // cleared -- exactly the substitution risk validate() exists to close.
+    let config = CallerConfig::new("bin/sh", dir.path());
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::CommandNotAbsolute)
+    );
+    assert_failure(&config, b"{}", CallerFailure::InvalidConfiguration);
+}
+
+#[test]
+fn bare_relative_command_is_also_rejected() {
+    let dir = tmp();
+    let config = CallerConfig::new("sh", dir.path());
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::CommandNotAbsolute)
+    );
+}
+
+#[test]
+fn relative_working_dir_is_rejected_without_spawning() {
+    let config = CallerConfig::new(SH, "relative/workdir");
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::WorkingDirNotAbsolute)
+    );
+    assert_failure(&config, b"{}", CallerFailure::InvalidConfiguration);
+}
+
+#[test]
+fn absolute_command_and_working_dir_pass_validation() {
+    let dir = tmp();
+    let config = CallerConfig::new(SH, dir.path());
+    assert_eq!(config.validate(), Ok(()));
+}
+
+#[test]
+fn excessive_args_are_rejected_without_spawning() {
+    let dir = tmp();
+    let mut config = CallerConfig::new(SH, dir.path());
+    config.args = (0..1000).map(|i| i.to_string()).collect();
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::TooManyArgs)
+    );
+    assert_failure(&config, b"{}", CallerFailure::InvalidConfiguration);
+}
+
+#[test]
+fn excessive_env_entries_are_rejected_without_spawning() {
+    let dir = tmp();
+    let mut config = CallerConfig::new(SH, dir.path());
+    config.extra_env = (0..1000)
+        .map(|i| (format!("VAR_{i}"), "value".to_string()))
+        .collect();
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::TooManyEnvEntries)
+    );
+    assert_failure(&config, b"{}", CallerFailure::InvalidConfiguration);
+}
+
+#[test]
+fn duplicate_env_keys_are_rejected_without_spawning() {
+    let dir = tmp();
+    let mut config = CallerConfig::new(SH, dir.path());
+    config.extra_env = vec![
+        ("PATH".to_string(), "/one".to_string()),
+        ("PATH".to_string(), "/two".to_string()),
+    ];
+    assert_eq!(
+        config.validate(),
+        Err(caller::CallerConfigError::DuplicateEnvKey)
+    );
+    assert_failure(&config, b"{}", CallerFailure::InvalidConfiguration);
+}
+
+// ---------------------------------------------------------------------
 // Abnormal termination.
 // ---------------------------------------------------------------------
 

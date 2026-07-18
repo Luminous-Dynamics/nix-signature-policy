@@ -21,9 +21,11 @@
 //!
 //! - No shell is ever involved; the command is exec'd directly.
 //! - The child's environment is cleared and receives only what the caller
-//!   explicitly opts into — no `PATH`, no inherited secrets. Callers should
-//!   configure an absolute path to the helper executable, matching the
-//!   precedent set by tools like OpenSSH's `AuthorizedKeysCommand`.
+//!   explicitly opts into — no `PATH`, no inherited secrets. `command` and
+//!   `working_dir` must be absolute paths, matching the precedent set by
+//!   tools like OpenSSH's `AuthorizedKeysCommand` — [`invoke`] enforces
+//!   this via [`CallerConfig::validate`] before spawning anything, not
+//!   merely as a documentation convention a caller could accidentally skip.
 //! - stdout (the protocol response) and stderr (diagnostics only, and
 //!   *never* consulted for the decision) are drained by dedicated reader
 //!   threads started immediately after spawn, each independently bounded.
@@ -80,6 +82,14 @@ pub const MAX_RESPONSE_BYTES: usize = MAX_AUTHORIZATION_RESPONSE_BYTES;
 /// overall timeout).
 pub const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 
+/// Bound on `CallerConfig::args`/`extra_env` entry counts. A protocol-shape
+/// guard, not a deployment tuning knob: no legitimate configuration for
+/// this caller (one helper path, one JSON request on stdin, a handful of
+/// explicit environment additions) needs more than this many entries: an
+/// unbounded config here would just be attacker- or misconfiguration-
+/// controlled memory/argv growth with no compensating benefit.
+pub const MAX_CONFIG_ENTRIES: usize = 64;
+
 /// How the caller should invoke one helper process.
 #[derive(Clone, Debug)]
 pub struct CallerConfig {
@@ -108,6 +118,66 @@ impl CallerConfig {
             extra_env: Vec::new(),
         }
     }
+
+    /// Mandatory, environment-independent shape invariants: things this
+    /// caller is not merely documented to require, but actually refuses to
+    /// operate without, in every deployment. `invoke` calls this before
+    /// spawning anything.
+    ///
+    /// Deliberately narrower than "every hardening check a production
+    /// deployment might want" -- filesystem-permission checks (regular
+    /// file, not group/world-writable, symlink rejection, owner identity)
+    /// are NOT included here, because they depend on deployment specifics
+    /// this crate cannot assume: a Nix-store-owned helper binary, a macOS
+    /// build, or a container image can all have permission/ownership
+    /// shapes a blanket check would false-positive on. Those belong to a
+    /// separate, opt-in, deployment-specific hardening layer, not a
+    /// mandatory invariant every caller pays regardless of environment.
+    ///
+    /// `command`/`working_dir` absoluteness IS mandatory, not merely
+    /// documented: a relative `command` containing a path separator (e.g.
+    /// `"sub/helper"`) resolves relative to the child's `working_dir`
+    /// *after* `chdir()` runs there, entirely independent of this caller
+    /// clearing `PATH` -- an attacker who can place a file at
+    /// `<working_dir>/<relative command>` could otherwise substitute the
+    /// executed binary despite `PATH` being empty.
+    pub fn validate(&self) -> Result<(), CallerConfigError> {
+        if !self.command.is_absolute() {
+            return Err(CallerConfigError::CommandNotAbsolute);
+        }
+        if !self.working_dir.is_absolute() {
+            return Err(CallerConfigError::WorkingDirNotAbsolute);
+        }
+        if self.args.len() > MAX_CONFIG_ENTRIES {
+            return Err(CallerConfigError::TooManyArgs);
+        }
+        if self.extra_env.len() > MAX_CONFIG_ENTRIES {
+            return Err(CallerConfigError::TooManyEnvEntries);
+        }
+        let mut seen_keys = std::collections::HashSet::with_capacity(self.extra_env.len());
+        for (key, _value) in &self.extra_env {
+            if !seen_keys.insert(key.as_str()) {
+                return Err(CallerConfigError::DuplicateEnvKey);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why [`CallerConfig::validate`] rejected a configuration. Kept distinct
+/// from [`CallerFailure`] (which describes what went wrong *after* a spawn
+/// attempt) so the two failure classes -- "this config can never be
+/// invoked safely" vs. "this specific invocation attempt failed" -- stay
+/// separable; `invoke` maps any variant here down to
+/// `CallerFailure::InvalidConfiguration` for its own smaller, stable
+/// public failure enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallerConfigError {
+    CommandNotAbsolute,
+    WorkingDirNotAbsolute,
+    TooManyArgs,
+    TooManyEnvEntries,
+    DuplicateEnvKey,
 }
 
 /// Why this caller refused to trust an invocation. Distinct from the
@@ -139,6 +209,16 @@ pub enum CallerFailure {
     /// The response's `contract_version` did not match
     /// [`INTEGRATION_CONTRACT_VERSION`].
     ContractVersionMismatch,
+    /// `config` failed [`CallerConfig::validate`] -- the process was never
+    /// spawned at all. Distinct from `SpawnFailed`, which means the OS
+    /// itself rejected a well-formed spawn attempt (missing executable,
+    /// permission denied); this means the configuration itself violated an
+    /// invariant this caller requires before it will attempt to spawn
+    /// anything, most importantly that `command` and `working_dir` are
+    /// absolute paths (see the module docs and `CallerConfig::validate`'s
+    /// own doc comment for why a relative `command` defeats the point of
+    /// clearing `PATH`).
+    InvalidConfiguration,
 }
 
 /// The result of invoking one helper process: either a trustworthy decision
@@ -165,6 +245,10 @@ pub enum InvocationOutcome {
 /// [`CallerConfig`]'s bounds. See the module docs for the full security
 /// model.
 pub fn invoke(config: &CallerConfig, request_bytes: &[u8]) -> InvocationOutcome {
+    if config.validate().is_err() {
+        return InvocationOutcome::Failure(CallerFailure::InvalidConfiguration);
+    }
+
     let mut command = Command::new(&config.command);
     command
         .args(&config.args)

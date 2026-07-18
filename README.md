@@ -105,6 +105,10 @@ recommendation.
 
 Current work — composable authorization core and raw-evidence adapter:
 
+- [`docs/EXTERNAL_REVIEW_RESOLUTION_2026-07.md`](docs/EXTERNAL_REVIEW_RESOLUTION_2026-07.md) —
+  what an external review found in the composable authorization core, what
+  was verified true and fixed, what was verified false (the release-packaging
+  finding), and the staged hardening program in progress as a follow-up;
 - [`docs/RAW_EVIDENCE_ADAPTER.md`](docs/RAW_EVIDENCE_ADAPTER.md) — verifying
   real narinfo `Sig:` entries without depending on `#15926`, validated
   against a real Determinate Nix build;
