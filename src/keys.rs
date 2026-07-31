@@ -17,11 +17,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 
 use crate::hybrid::{
-    self, HybridSigner, HybridVerifyingKeys, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
+    self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSigner, HybridVerifyingKeys,
     ML_DSA_65_PUBLIC_KEY_LEN, ML_DSA_65_SIGNATURE_LEN,
 };
 use crate::narinfo::{self, NarInfo};
