@@ -30,7 +30,7 @@ rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports"] }
 serde_json = "1"
 
 [[bench]]
