@@ -17,11 +17,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 
 use crate::hybrid::{
-    self, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN, HybridSigner, HybridVerifyingKeys,
+    self, HybridSigner, HybridVerifyingKeys, ED25519_PUBLIC_KEY_LEN, ED25519_SIGNATURE_LEN,
     ML_DSA_65_PUBLIC_KEY_LEN, ML_DSA_65_SIGNATURE_LEN,
 };
 use crate::narinfo::{self, NarInfo};
@@ -199,7 +199,7 @@ fn write_new_atomic(path: &Path, contents: &str, secret: bool) -> Result<()> {
 
 /// Overwrite `path` atomically (temp file + rename): a reader never
 /// observes a partially-written file, whether `path` exists yet or not.
-/// Unlike [`write_new_atomic`], overwriting an existing file is the whole
+/// Unlike `write_new_atomic` (private), overwriting an existing file is the whole
 /// point here (e.g. re-signing an already-signed `.narinfo`), so there's no
 /// existence check.
 pub fn write_atomic_overwrite(path: &Path, contents: &str) -> Result<()> {
